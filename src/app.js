@@ -78,7 +78,8 @@ app.use('/api', routes);
 
 // ─── 404 ─────────────────────────────────────────────────────────────────────
 app.use('*', (req, res) => {
-  res.status(404).json({ success: false, message: `Route ${req.method} ${req.originalUrl} introuvable` });
+  console.warn(`[404] ${req.method} ${req.originalUrl} — origine: ${req.headers.origin || 'inconnue'}`);
+  res.status(404).json({ success: false, message: 'Service introuvable.' });
 });
 
 // ─── GESTIONNAIRE D'ERREURS GLOBAL ────────────────────────────────────────────
