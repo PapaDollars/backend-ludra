@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
+const { sendResetPassword } = require('../services/email.service');
 
 const generateTokens = (userId) => {
   const accessToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, {
@@ -159,11 +160,16 @@ exports.forgotPassword = async (req, res) => {
     updatedAt: new Date().toISOString(),
   });
 
-  // TODO: Envoyer l'email avec nodemailer (configurer SMTP dans .env)
-  // const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
-  // await emailService.sendResetPassword(email, resetUrl);
+  const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
 
-  console.log(`[DEV] Reset token pour ${email}: ${resetToken}`);
+  try {
+    await sendResetPassword(email, resetUrl);
+  } catch (emailErr) {
+    console.error('[EMAIL] Échec envoi reset password:', emailErr.message);
+    // On log mais on retourne quand même 200 (sécurité : ne pas révéler l'état du serveur mail)
+  }
+
+  console.log(`[DEV] Reset URL: ${resetUrl}`);
 
   return ApiResponse.success(res, null, 'Si un compte existe avec cet email, un lien de réinitialisation a été envoyé.');
 };
