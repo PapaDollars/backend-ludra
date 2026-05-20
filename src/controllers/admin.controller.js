@@ -88,7 +88,9 @@ exports.getAllUsers = async (req, res) => {
   if (isActive !== undefined) query = query.where('isActive', '==', isActive === 'true');
 
   const snap = await query.get();
-  let users = snap.docs.map((d) => formatUser(d.id, d.data()));
+  let users = snap.docs
+    .map((d) => formatUser(d.id, d.data()))
+    .filter((u) => u.role !== 'admin');  // L'admin n'apparaît pas dans la liste
 
   if (search) {
     const term = search.toLowerCase();
