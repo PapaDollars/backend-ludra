@@ -91,7 +91,11 @@ exports.login = async (req, res) => {
   const userData = userDoc.data();
 
   if (!userData.isActive) {
-    return ApiResponse.forbidden(res, 'Votre compte a été désactivé. Contactez l\'administrateur.');
+    const reason = userData.deactivationReason;
+    const message = reason
+      ? `Votre compte a été restreint par l'administrateur. Raison : ${reason}`
+      : 'Votre compte a été restreint par l\'administrateur. Contactez le support pour plus d\'informations.';
+    return res.status(403).json({ success: false, code: 'ACCOUNT_DISABLED', message });
   }
 
   const isValid = await bcrypt.compare(password, userData.passwordHash);

@@ -22,7 +22,7 @@ const authenticate = async (req, res, next) => {
     const user = { id: userDoc.id, ...userDoc.data() };
 
     if (!user.isActive) {
-      return ApiResponse.forbidden(res, 'Compte désactivé');
+      return res.status(403).json({ success: false, code: 'ACCOUNT_DISABLED', message: 'Votre compte a été restreint.' });
     }
 
     req.user = user;
