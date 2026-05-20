@@ -16,8 +16,24 @@ const app = express();
 // ─── SÉCURITÉ ────────────────────────────────────────────────────────────────
 app.use(helmet());
 
+const buildAllowedOrigins = () => {
+  const base = process.env.FRONTEND_URL || 'http://localhost:3000';
+  const origins = new Set(['http://localhost:3000', 'http://localhost:3001', base]);
+  // Ajouter automatiquement la version www / non-www
+  if (base.includes('://www.')) origins.add(base.replace('://www.', '://'));
+  else if (base.startsWith('https://')) origins.add(base.replace('https://', 'https://www.'));
+  return origins;
+};
+const ALLOWED_ORIGINS = buildAllowedOrigins();
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    // Requêtes server-to-server (NextAuth, Vercel → Scalingo) : pas d'origin → OK
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.has(origin)) return callback(null, true);
+    console.warn('[CORS] Origine bloquée:', origin);
+    callback(new Error(`CORS: origine non autorisée — ${origin}`));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
