@@ -3,7 +3,7 @@ const router = express.Router();
 const { body } = require('express-validator');
 const validate = require('../middleware/validate');
 const { authenticate } = require('../middleware/auth');
-const { requireRole } = require('../middleware/role');
+const { requireRole, requirePermission } = require('../middleware/role');
 const { upload } = require('../middleware/upload');
 const ctrl = require('../controllers/admin.controller');
 
@@ -51,7 +51,7 @@ router.get('/stats', ctrl.getGlobalStats);
  *       200:
  *         description: Liste des utilisateurs paginée
  */
-router.get('/users', ctrl.getAllUsers);
+router.get('/users', requirePermission('manage_users'), ctrl.getAllUsers);
 
 /**
  * @swagger
@@ -168,6 +168,7 @@ router.put('/:id/users', ctrl.updateUser);
  */
 router.patch(
   '/users/:id/role',
+  requirePermission('manage_users'),
   [body('role').isIn(['user', 'landlord']).withMessage('Rôle invalide (user ou landlord uniquement)')],
   validate,
   ctrl.changeUserRole
@@ -175,6 +176,7 @@ router.patch(
 
 router.patch(
   '/users/:id/status',
+  requirePermission('manage_users'),
   [body('isActive').isBoolean().withMessage('isActive doit être un booléen')],
   validate,
   ctrl.toggleUserStatus
@@ -197,7 +199,7 @@ router.patch(
  *       200:
  *         description: Utilisateur supprimé
  */
-router.delete('/users/:id', ctrl.deleteUser);
+router.delete('/users/:id', requirePermission('manage_users'), ctrl.deleteUser);
 
 /**
  * @swagger
@@ -224,7 +226,7 @@ router.delete('/users/:id', ctrl.deleteUser);
  *       200:
  *         description: Toutes les propriétés paginées
  */
-router.get('/properties', ctrl.getAllProperties);
+router.get('/properties', requirePermission('manage_properties'), ctrl.getAllProperties);
 
 /**
  * @swagger
@@ -253,7 +255,7 @@ router.get('/properties', ctrl.getAllProperties);
  *       200:
  *         description: Propriété mise à jour
  */
-router.patch('/properties/:id/status', ctrl.updatePropertyAdmin);
+router.patch('/properties/:id/status', requirePermission('manage_properties'), ctrl.updatePropertyAdmin);
 
 /**
  * @swagger
@@ -272,7 +274,7 @@ router.patch('/properties/:id/status', ctrl.updatePropertyAdmin);
  *       200:
  *         description: Propriété supprimée
  */
-router.delete('/properties/:id', ctrl.deletePropertyAdmin);
+router.delete('/properties/:id', requirePermission('manage_properties'), ctrl.deletePropertyAdmin);
 
 /**
  * @swagger

@@ -6,6 +6,19 @@ const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/role');
 const ctrl = require('../controllers/contacts.controller');
 
+// Formulaire de contact général (public, sans authentification)
+router.post(
+  '/general',
+  [
+    body('name').trim().isLength({ min: 2 }).withMessage('Nom requis'),
+    body('email').isEmail().withMessage('Email invalide'),
+    body('subject').trim().notEmpty().withMessage('Sujet requis'),
+    body('message').trim().isLength({ min: 10 }).withMessage('Message trop court'),
+  ],
+  validate,
+  ctrl.sendGeneralContact
+);
+
 /**
  * @swagger
  * /contacts:

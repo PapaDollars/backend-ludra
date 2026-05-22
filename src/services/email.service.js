@@ -1,12 +1,13 @@
 const nodemailer = require('nodemailer');
 
+// Brevo (ex-Sendinblue) SMTP
 const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: parseInt(process.env.SMTP_PORT || '587'),
+  host: 'smtp-relay.brevo.com',
+  port: 587,
   secure: false,
   auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
+    user: process.env.BREVO_SMTP_LOGIN,  // ton email de compte Brevo
+    pass: process.env.BREVO_SMTP_KEY,    // clé SMTP trouvée dans Brevo > SMTP & API
   },
 });
 

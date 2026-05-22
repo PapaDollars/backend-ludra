@@ -3,8 +3,23 @@ const { createNotification } = require('../utils/notifications');
 const { uploadMultipleToCloudinary } = require('../middleware/upload');
 const ApiResponse = require('../utils/ApiResponse');
 
-const VALID_LOCATIONS = ['douala', 'yaounde', 'bafoussam', 'garoua', 'ngaoundere', 'limbe', 'kribi', 'bamenda'];
-const VALID_TYPES = ['apartment', 'studio', 'house', 'room', 'loft'];
+const VALID_LOCATIONS = ['maroua', 'garoua', 'ngaoundere', 'bertoua', 'yaounde', 'douala', 'bafoussam', 'ebolowa', 'buea'];
+const VALID_TYPES = ['apartment', 'studio', 'house', 'room'];
+
+// Récupère nom+avatar de plusieurs landlords en une seule passe
+async function fetchLandlordMap(landlordIds) {
+  const uniqueIds = [...new Set(landlordIds.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+  const docs = await Promise.all(uniqueIds.map((id) => db.collection('users').doc(id).get()));
+  const map = {};
+  docs.forEach((doc) => {
+    if (doc.exists) {
+      const { name, avatar } = doc.data();
+      map[doc.id] = { name, avatar: avatar || null };
+    }
+  });
+  return map;
+}
 
 exports.getProperties = async (req, res) => {
   const {
@@ -66,13 +81,12 @@ exports.getProperties = async (req, res) => {
   const total = properties.length;
   const paginated = properties.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-  // Masquer les infos de contact si non connecté
+  // Fetch landlord info en batch pour toutes les propriétés de la page
+  const landlordMap = await fetchLandlordMap(paginated.map((p) => p.landlordId));
+
   const result = paginated.map((p) => {
-    if (!req.user) {
-      const { landlordPhone, landlordEmail, ...rest } = p;
-      return rest;
-    }
-    return p;
+    const base = req.user ? p : (({ landlordPhone, landlordEmail, ...rest }) => rest)(p);
+    return { ...base, landlord: landlordMap[p.landlordId] || null };
   });
 
   return ApiResponse.paginated(res, result, pageNum, limitNum, total);
@@ -80,14 +94,18 @@ exports.getProperties = async (req, res) => {
 
 exports.getFeaturedProperties = async (req, res) => {
   const snap = await db.collection('properties')
-    .where('featured', '==', true)
     .where('status', '==', 'available')
     .where('isActive', '==', true)
-    .limit(6)
+    .orderBy('createdAt', 'desc')
+    .limit(3)
     .get();
 
   const properties = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
-  return ApiResponse.success(res, properties);
+
+  const landlordMap = await fetchLandlordMap(properties.map((p) => p.landlordId));
+  const result = properties.map((p) => ({ ...p, landlord: landlordMap[p.landlordId] || null }));
+
+  return ApiResponse.success(res, result);
 };
 
 exports.getPropertyById = async (req, res) => {
@@ -158,7 +176,7 @@ exports.createProperty = async (req, res) => {
     imagePublicIds,
     beds: parseInt(beds),
     baths: parseInt(baths),
-    area: Number(area),
+    area: area ? Number(area) : null,
     featured: featured === 'true' || featured === true,
     description: description?.trim() || '',
     address: address.trim(),

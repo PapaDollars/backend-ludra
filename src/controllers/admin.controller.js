@@ -108,7 +108,7 @@ exports.getAllUsers = async (req, res) => {
 };
 
 exports.createUser = async (req, res) => {
-  const { name, email, phone, password, role, city } = req.body;
+  const { name, email, phone, password, role, city, adminPermissions } = req.body;
   const usersRef = db.collection('users');
 
   const [emailSnap, phoneSnap] = await Promise.all([
@@ -136,6 +136,9 @@ exports.createUser = async (req, res) => {
     refreshToken: null,
     createdAt: now,
     updatedAt: now,
+    ...(role === 'admin' && {
+      adminPermissions: Array.isArray(adminPermissions) ? adminPermissions : [],
+    }),
   };
 
   const docRef = await usersRef.add(userData);
@@ -148,9 +151,11 @@ exports.updateUser = async (req, res) => {
 
   if (!doc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
 
-  const allowed = ['name', 'phone', 'city', 'role', 'emailVerified', 'phoneVerified'];
+  const allowed = ['name', 'phone', 'city', 'role', 'emailVerified', 'phoneVerified', 'adminPermissions'];
   const updates = { updatedAt: new Date().toISOString() };
   allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+  // Si le rôle change vers non-admin, supprimer les permissions
+  if (req.body.role && req.body.role !== 'admin') updates.adminPermissions = [];
 
   await doc.ref.update(updates);
   const updated = await doc.ref.get();
