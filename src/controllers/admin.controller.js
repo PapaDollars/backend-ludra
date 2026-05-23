@@ -121,6 +121,15 @@ exports.getAllUsers = async (req, res) => {
 
 exports.createUser = async (req, res) => {
   const { name, email, phone, password, role, city, adminPermissions } = req.body;
+
+  // Seul un compte ayant add_admin peut créer un administrateur
+  if (role === 'admin') {
+    const perms = req.user.adminPermissions || [];
+    if (!isPrivileged(req.user.role) && !perms.includes('add_admin')) {
+      return ApiResponse.forbidden(res, 'Permission insuffisante pour créer un administrateur');
+    }
+  }
+
   const usersRef = db.collection('users');
 
   const [emailSnap, phoneSnap] = await Promise.all([
@@ -163,6 +172,14 @@ exports.updateUser = async (req, res) => {
 
   if (!doc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
 
+  // Seul un compte ayant add_admin peut élever un utilisateur au rang admin
+  if (req.body.role === 'admin') {
+    const perms = req.user.adminPermissions || [];
+    if (!isPrivileged(req.user.role) && !perms.includes('add_admin')) {
+      return ApiResponse.forbidden(res, 'Permission insuffisante pour attribuer le rôle administrateur');
+    }
+  }
+
   const allowed = ['name', 'phone', 'city', 'role', 'emailVerified', 'phoneVerified', 'adminPermissions'];
   const updates = { updatedAt: new Date().toISOString() };
   allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
@@ -188,6 +205,14 @@ exports.changeUserRole = async (req, res) => {
   const currentRole = doc.data().role;
   if (isPrivileged(currentRole)) {
     return ApiResponse.forbidden(res, 'Impossible de modifier le rôle d\'un administrateur');
+  }
+
+  // Seul un compte ayant add_admin peut promouvoir un utilisateur au rang admin
+  if (role === 'admin') {
+    const perms = req.user.adminPermissions || [];
+    if (!isPrivileged(req.user.role) && !perms.includes('add_admin')) {
+      return ApiResponse.forbidden(res, 'Permission insuffisante pour attribuer le rôle administrateur');
+    }
   }
 
   const userData = doc.data();
