@@ -206,15 +206,16 @@ exports.createProperty = async (req, res) => {
 
   const docRef = await db.collection('properties').add(propertyData);
 
-  // Notifier tous les admins si la propriété est en attente (rôle landlord)
+  // Notifier tous les admins + proprietaire si la propriété est en attente
   if (propertyData.status === 'pending') {
     const landlordName = req.user.name || 'Un propriétaire';
-    const adminSnap = await db.collection('users')
-      .where('role', '==', 'admin')
-      .where('isActive', '==', true)
-      .get();
-    await Promise.all(adminSnap.docs.map((adminDoc) =>
-      createNotification(adminDoc.id, {
+    const [adminSnap, proprietaireSnap] = await Promise.all([
+      db.collection('users').where('role', '==', 'admin').where('isActive', '==', true).get(),
+      db.collection('users').where('role', '==', 'proprietaire').where('isActive', '==', true).get(),
+    ]);
+    const staffDocs = [...adminSnap.docs, ...proprietaireSnap.docs];
+    await Promise.all(staffDocs.map((staffDoc) =>
+      createNotification(staffDoc.id, {
         type: 'pending_property',
         title: 'Nouvelle propriété en attente',
         message: `${landlordName} a soumis "${propertyData.title}" (${propertyData.type}, ${propertyData.location}) — ${Number(price).toLocaleString('fr-FR')} FCFA/mois.`,
@@ -287,6 +288,36 @@ exports.updatePropertyStatus = async (req, res) => {
   }
 
   await doc.ref.update({ status, updatedAt: new Date().toISOString() });
+
+  // Quand approuvé ou rejeté : marquer toutes les notifs pending pour cette propriété comme lues
+  if (status === 'available' || status === 'rejected') {
+    const property = doc.data();
+
+    // Marquer comme lues pour tous les admins/proprietaire (déjà traité par l'un d'eux)
+    const notifSnap = await db.collection('notifications')
+      .where('type', '==', 'pending_property')
+      .where('propertyId', '==', id)
+      .get();
+    if (!notifSnap.empty) {
+      const batch = db.batch();
+      notifSnap.docs.forEach((n) => batch.update(n.ref, { isRead: true }));
+      await batch.commit();
+    }
+
+    // Notifier le landlord du résultat
+    if (property.landlordId) {
+      const isApproved = status === 'available';
+      await createNotification(property.landlordId, {
+        type: isApproved ? 'property_approved' : 'property_rejected',
+        title: isApproved ? 'Propriété approuvée ✅' : 'Propriété rejetée ❌',
+        message: isApproved
+          ? `Votre bien "${property.title}" a été approuvé et est maintenant visible sur LudraHome.`
+          : `Votre bien "${property.title}" n'a pas été approuvé. Contactez l'administration pour plus d'informations.`,
+        propertyId: id,
+        propertyTitle: property.title,
+      });
+    }
+  }
 
   return ApiResponse.success(res, { id, status }, 'Statut mis à jour');
 };
