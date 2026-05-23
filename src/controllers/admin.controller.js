@@ -95,6 +95,13 @@ exports.getAllUsers = async (req, res) => {
   const pageNum = Math.max(1, parseInt(page));
   const limitNum = Math.min(100, parseInt(limit));
 
+  const canSeeAdmins = req.user.role === 'proprietaire' || (req.user.adminPermissions || []).includes('add_admin');
+
+  // Bloquer explicitement un filtre role=admin sans permission
+  if (role === 'admin' && !canSeeAdmins) {
+    return ApiResponse.forbidden(res, 'Permission insuffisante pour filtrer par administrateur');
+  }
+
   let query = db.collection('users');
   if (role) query = query.where('role', '==', role);
   if (isActive !== undefined) query = query.where('isActive', '==', isActive === 'true');
@@ -102,7 +109,8 @@ exports.getAllUsers = async (req, res) => {
   const snap = await query.get();
   let users = snap.docs
     .map((d) => formatUser(d.id, d.data()))
-    .filter((u) => u.role !== 'proprietaire');  // Le compte propriétaire n'apparaît pas dans la liste
+    .filter((u) => u.role !== 'proprietaire')  // Le compte propriétaire n'apparaît jamais
+    .filter((u) => canSeeAdmins || u.role !== 'admin');  // Admins masqués sans permission add_admin
 
   if (search) {
     const term = search.toLowerCase();
