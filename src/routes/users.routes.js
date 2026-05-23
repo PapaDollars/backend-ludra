@@ -35,6 +35,7 @@ router.put(
     body('name').optional().trim().isLength({ min: 2 }),
     body('phone').optional().matches(/^(\+237|237)?[6|2|3]\d{8}$/),
     body('city').optional().trim(),
+    body('whatsapp').optional({ checkFalsy: true }).matches(/^(\+237|237)?[62369]\d{8}$/),
   ],
   validate,
   ctrl.updateProfile

@@ -10,7 +10,7 @@ const formatUser = (id, data) => {
 };
 
 exports.updateProfile = async (req, res) => {
-  const { name, phone, city } = req.body;
+  const { name, phone, city, whatsapp } = req.body;
   const userId = req.user.id;
 
   const updates = { updatedAt: new Date().toISOString() };
@@ -25,6 +25,8 @@ exports.updateProfile = async (req, res) => {
     }
     updates.phone = phone;
   }
+
+  if (whatsapp !== undefined) updates.whatsapp = whatsapp ? whatsapp.trim() : null;
 
   await db.collection('users').doc(userId).update(updates);
 

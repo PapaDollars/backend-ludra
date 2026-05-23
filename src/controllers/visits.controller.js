@@ -113,7 +113,7 @@ exports.respondToVisit = async (req, res) => {
 
   const visit = doc.data();
 
-  if (req.!isPrivileged(user.role) && visit.landlordId !== req.user.id) {
+  if (!isPrivileged(req.user.role) && visit.landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 
