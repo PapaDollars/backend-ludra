@@ -58,17 +58,25 @@ exports.getContacts = async (req, res) => {
   const limitNum = Math.min(50, parseInt(limit));
   const user = req.user;
 
-  let query = db.collection('contacts');
+  let contacts;
 
   if (user.role === 'landlord') {
-    query = query.where('landlordId', '==', user.id);
-  } else if (user.role === 'user') {
-    query = query.where('userId', '==', user.id);
+    // Contacts reçus (sur ses propriétés) + contacts envoyés (vers d'autres propriétaires)
+    const [receivedSnap, sentSnap] = await Promise.all([
+      db.collection('contacts').where('landlordId', '==', user.id).get(),
+      db.collection('contacts').where('userId', '==', user.id).get(),
+    ]);
+    const seen = new Set();
+    contacts = [...receivedSnap.docs, ...sentSnap.docs]
+      .filter((d) => { if (seen.has(d.id)) return false; seen.add(d.id); return true; })
+      .map((d) => ({ id: d.id, ...d.data() }));
+  } else {
+    let query = db.collection('contacts');
+    if (user.role === 'user') query = query.where('userId', '==', user.id);
+    // admin / proprietaire voit tout
+    const snap = await query.get();
+    contacts = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
-  // admin voit tout
-
-  const snap = await query.get();
-  let contacts = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
 
   if (unreadOnly === 'true') {
     contacts = contacts.filter((c) => !c.isRead);
@@ -109,7 +117,7 @@ exports.markAsRead = async (req, res) => {
     return ApiResponse.notFound(res, 'Contact introuvable');
   }
 
-  if (req.!isPrivileged(user.role) && doc.data().landlordId !== req.user.id) {
+  if (!isPrivileged(req.user.role) && doc.data().landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 

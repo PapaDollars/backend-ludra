@@ -131,8 +131,9 @@ exports.getPropertyById = async (req, res) => {
 
     // Infos de contact uniquement pour les utilisateurs connectés
     if (req.user) {
-      const { phone } = landlordDoc.data();
+      const { phone, whatsapp } = landlordDoc.data();
       property.landlord.phone = phone;
+      if (whatsapp) property.landlord.whatsapp = whatsapp;
     }
   }
 

@@ -75,7 +75,7 @@ exports.becomeLandlord = async (req, res) => {
     return ApiResponse.badRequest(res, 'Seuls les locataires peuvent effectuer cette demande');
   }
 
-  const { fullName } = req.body;
+  const { fullName, whatsapp } = req.body;
 
   if (!fullName || fullName.trim().split(/\s+/).length < 2) {
     return ApiResponse.badRequest(res, 'Le nom complet (prénom + nom) est requis');
@@ -84,6 +84,7 @@ exports.becomeLandlord = async (req, res) => {
   const updates = {
     role: 'landlord',
     name: fullName.trim(),
+    ...(whatsapp ? { whatsapp: whatsapp.trim() } : {}),
     updatedAt: new Date().toISOString(),
   };
 

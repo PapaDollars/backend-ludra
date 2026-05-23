@@ -48,7 +48,7 @@ router.post(
 router.post(
   '/',
   authenticate,
-  requireRole('user', 'admin'),
+  requireRole('user', 'landlord', 'admin'),
   [
     body('propertyId').notEmpty().withMessage('ID propriété requis'),
     body('message').trim().isLength({ min: 10 }).withMessage('Message trop court (min 10 car.)'),

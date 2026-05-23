@@ -59,7 +59,7 @@ exports.getGlobalStats = async (req, res) => {
   const totalUsers = users.length;
   const totalLandlords = users.filter((u) => u.role === 'landlord').length;
   const totalRegularUsers = users.filter((u) => u.role === 'user').length;
-  const totalAdmins = users.filter((u) => u.role === 'admin').length;
+  const totalAdmins = users.filter((u) => isPrivileged(u.role)).length;
 
   return ApiResponse.success(res, {
     properties: {
@@ -186,7 +186,7 @@ exports.changeUserRole = async (req, res) => {
   if (!doc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
 
   const currentRole = doc.data().role;
-  if (currentRole === 'admin') {
+  if (isPrivileged(currentRole)) {
     return ApiResponse.forbidden(res, 'Impossible de modifier le rôle d\'un administrateur');
   }
 
@@ -219,7 +219,7 @@ exports.toggleUserStatus = async (req, res) => {
 
   const userData = doc.data();
   // Seul le compte propriétaire peut activer/désactiver un admin
-  if (userData.role === 'admin' && req.user.email !== MAIN_OWNER_EMAIL) {
+  if (isPrivileged(userData.role) && req.user.email !== MAIN_OWNER_EMAIL) {
     return ApiResponse.forbidden(res, 'Seul le compte propriétaire peut modifier le statut d\'un administrateur');
   }
 
