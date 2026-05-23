@@ -34,7 +34,7 @@ exports.getProperties = async (req, res) => {
 
   let query = db.collection('properties').where('isActive', '==', true);
 
-  const canSeeAll = req.user && isPrivileged(req.user.role) || req.user.role === 'landlord';
+  const canSeeAll = req.user && (isPrivileged(req.user.role) || req.user.role === 'landlord');
   if (status) {
     query = query.where('status', '==', status);
   }
@@ -141,6 +141,14 @@ exports.getPropertyById = async (req, res) => {
 };
 
 exports.createProperty = async (req, res) => {
+  // Un admin (non proprietaire) doit avoir la permission add_property
+  if (req.user.role === 'admin') {
+    const perms = req.user.adminPermissions || [];
+    if (!perms.includes('add_property')) {
+      return ApiResponse.forbidden(res, 'Permission insuffisante pour ajouter une propriété');
+    }
+  }
+
   const {
     title, type, price, location, beds, baths, area,
     address, description, latitude, longitude, featured, amenities,
