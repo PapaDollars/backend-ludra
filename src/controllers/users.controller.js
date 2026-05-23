@@ -2,6 +2,7 @@ const bcrypt = require('bcryptjs');
 const { db } = require('../config/firebase');
 const { uploadAvatarToCloudinary } = require('../middleware/upload');
 const ApiResponse = require('../utils/ApiResponse');
+const { isPrivileged } = require('../middleware/role');
 
 const formatUser = (id, data) => {
   const { passwordHash, refreshToken, resetPasswordToken, resetPasswordExpiry, ...safe } = data;
@@ -115,7 +116,7 @@ exports.getUserById = async (req, res) => {
   const userData = userDoc.data();
 
   // Profil public limité sauf pour admin ou soi-même
-  if (req.user.role !== 'admin' && req.user.id !== id) {
+  if (!isPrivileged(req.user.role) && req.user.id !== id) {
     const { name, avatar, role, city, createdAt } = userData;
     return ApiResponse.success(res, { id, name, avatar, role, city, createdAt });
   }

@@ -1,5 +1,6 @@
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
+const { isPrivileged } = require('../middleware/role');
 const { createNotification } = require('../utils/notifications');
 const { sendResetPassword } = require('../services/email.service');
 
@@ -93,7 +94,7 @@ exports.getContactById = async (req, res) => {
   const user = req.user;
 
   // Accès limité : concernés uniquement ou admin
-  if (user.role !== 'admin' && contact.userId !== user.id && contact.landlordId !== user.id) {
+  if (!isPrivileged(user.role) && contact.userId !== user.id && contact.landlordId !== user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 
@@ -108,7 +109,7 @@ exports.markAsRead = async (req, res) => {
     return ApiResponse.notFound(res, 'Contact introuvable');
   }
 
-  if (req.user.role !== 'admin' && doc.data().landlordId !== req.user.id) {
+  if (req.!isPrivileged(user.role) && doc.data().landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 

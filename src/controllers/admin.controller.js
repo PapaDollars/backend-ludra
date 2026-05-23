@@ -1,7 +1,19 @@
 const bcrypt = require('bcryptjs');
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
+const { isPrivileged } = require('../middleware/role');
 const { createNotification, createAdminLog } = require('../utils/notifications');
+
+async function fetchLandlordMap(landlordIds) {
+  const uniqueIds = [...new Set(landlordIds.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+  const docs = await Promise.all(uniqueIds.map((id) => db.collection('users').doc(id).get()));
+  const map = {};
+  docs.forEach((doc) => {
+    if (doc.exists) { const { name, avatar } = doc.data(); map[doc.id] = { name, avatar: avatar || null }; }
+  });
+  return map;
+}
 
 const formatUser = (id, data) => {
   const { passwordHash, refreshToken, resetPasswordToken, resetPasswordExpiry, ...safe } = data;
@@ -90,7 +102,7 @@ exports.getAllUsers = async (req, res) => {
   const snap = await query.get();
   let users = snap.docs
     .map((d) => formatUser(d.id, d.data()))
-    .filter((u) => u.role !== 'admin');  // L'admin n'apparaît pas dans la liste
+    .filter((u) => u.role !== 'proprietaire');  // Le compte propriétaire n'apparaît pas dans la liste
 
   if (search) {
     const term = search.toLowerCase();
@@ -136,7 +148,7 @@ exports.createUser = async (req, res) => {
     refreshToken: null,
     createdAt: now,
     updatedAt: now,
-    ...(role === 'admin' && {
+    ...(isPrivileged(role) && {
       adminPermissions: Array.isArray(adminPermissions) ? adminPermissions : [],
     }),
   };
@@ -155,7 +167,7 @@ exports.updateUser = async (req, res) => {
   const updates = { updatedAt: new Date().toISOString() };
   allowed.forEach((f) => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
   // Si le rôle change vers non-admin, supprimer les permissions
-  if (req.body.role && req.body.role !== 'admin') updates.adminPermissions = [];
+  if (req.body.role && !isPrivileged(req.body.role)) updates.adminPermissions = [];
 
   await doc.ref.update(updates);
   const updated = await doc.ref.get();
@@ -196,6 +208,7 @@ exports.changeUserRole = async (req, res) => {
 exports.toggleUserStatus = async (req, res) => {
   const { id } = req.params;
   const { isActive, reason } = req.body;
+  const { MAIN_OWNER_EMAIL } = require('../middleware/role');
 
   if (id === req.user.id) {
     return ApiResponse.badRequest(res, 'Vous ne pouvez pas désactiver votre propre compte');
@@ -205,6 +218,11 @@ exports.toggleUserStatus = async (req, res) => {
   if (!doc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
 
   const userData = doc.data();
+  // Seul le compte propriétaire peut activer/désactiver un admin
+  if (userData.role === 'admin' && req.user.email !== MAIN_OWNER_EMAIL) {
+    return ApiResponse.forbidden(res, 'Seul le compte propriétaire peut modifier le statut d\'un administrateur');
+  }
+
   await doc.ref.update({
     isActive,
     deactivationReason: isActive ? null : (reason || ''),
@@ -265,7 +283,10 @@ exports.getAllProperties = async (req, res) => {
   const total = properties.length;
   const paginated = properties.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-  return ApiResponse.paginated(res, paginated, pageNum, limitNum, total);
+  const landlordMap = await fetchLandlordMap(paginated.map((p) => p.landlordId));
+  const result = paginated.map((p) => ({ ...p, landlord: landlordMap[p.landlordId] || null }));
+
+  return ApiResponse.paginated(res, result, pageNum, limitNum, total);
 };
 
 exports.updatePropertyAdmin = async (req, res) => {

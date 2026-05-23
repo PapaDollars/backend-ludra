@@ -1,6 +1,20 @@
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
 
+async function fetchLandlordMap(landlordIds) {
+  const uniqueIds = [...new Set(landlordIds.filter(Boolean))];
+  if (!uniqueIds.length) return {};
+  const docs = await Promise.all(uniqueIds.map((id) => db.collection('users').doc(id).get()));
+  const map = {};
+  docs.forEach((doc) => {
+    if (doc.exists) {
+      const { name, avatar } = doc.data();
+      map[doc.id] = { name, avatar: avatar || null };
+    }
+  });
+  return map;
+}
+
 const getFavDoc = (userId) => db.collection('favorites').doc(userId);
 
 exports.getFavorites = async (req, res) => {
@@ -27,7 +41,10 @@ exports.getFavorites = async (req, res) => {
     snap.docs.forEach((d) => propertiesList.push({ id: d.id, ...d.data() }));
   }
 
-  return ApiResponse.success(res, propertiesList);
+  const landlordMap = await fetchLandlordMap(propertiesList.map((p) => p.landlordId));
+  const result = propertiesList.map((p) => ({ ...p, landlord: landlordMap[p.landlordId] || null }));
+
+  return ApiResponse.success(res, result);
 };
 
 exports.addFavorite = async (req, res) => {

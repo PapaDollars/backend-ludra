@@ -126,7 +126,7 @@ router.get('/:id', optionalAuth, ctrl.getPropertyById);
 router.post(
   '/',
   authenticate,
-  requireRole('landlord', 'admin'),
+  requireRole('landlord', 'admin', 'proprietaire'),
   upload.array('images', 10),
   [
     body('title').trim().notEmpty().withMessage('Titre requis'),
@@ -182,7 +182,7 @@ router.post(
 router.put(
   '/:id',
   authenticate,
-  requireRole('landlord', 'admin'),
+  requireRole('landlord', 'admin', 'proprietaire'),
   upload.array('images', 10),
   ctrl.updateProperty
 );
@@ -218,7 +218,7 @@ router.put(
 router.patch(
   '/:id/status',
   authenticate,
-  requireRole('landlord', 'admin'),
+  requireRole('landlord', 'admin', 'proprietaire'),
   [body('status').isIn(['available', 'occupied', 'pending']).withMessage('Statut invalide')],
   validate,
   ctrl.updatePropertyStatus
@@ -241,6 +241,6 @@ router.patch(
  *       200:
  *         description: Propriété supprimée
  */
-router.delete('/:id', authenticate, requireRole('landlord', 'admin'), ctrl.deleteProperty);
+router.delete('/:id', authenticate, requireRole('landlord', 'admin', 'proprietaire'), ctrl.deleteProperty);
 
 module.exports = router;

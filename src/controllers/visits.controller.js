@@ -1,5 +1,6 @@
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
+const { isPrivileged } = require('../middleware/role');
 
 exports.requestVisit = async (req, res) => {
   const { propertyId, preferredDate, message } = req.body;
@@ -94,7 +95,7 @@ exports.getVisitById = async (req, res) => {
   const visit = { id: doc.id, ...doc.data() };
   const user = req.user;
 
-  if (user.role !== 'admin' && visit.userId !== user.id && visit.landlordId !== user.id) {
+  if (!isPrivileged(user.role) && visit.userId !== user.id && visit.landlordId !== user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 
@@ -112,7 +113,7 @@ exports.respondToVisit = async (req, res) => {
 
   const visit = doc.data();
 
-  if (req.user.role !== 'admin' && visit.landlordId !== req.user.id) {
+  if (req.!isPrivileged(user.role) && visit.landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 

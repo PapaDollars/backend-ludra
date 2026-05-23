@@ -7,7 +7,7 @@ const { requireRole, requirePermission } = require('../middleware/role');
 const { upload } = require('../middleware/upload');
 const ctrl = require('../controllers/admin.controller');
 
-router.use(authenticate, requireRole('admin'));
+router.use(authenticate, requireRole('admin', 'proprietaire'));
 
 /**
  * @swagger

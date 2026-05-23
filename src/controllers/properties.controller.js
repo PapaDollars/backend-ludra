@@ -2,6 +2,7 @@ const { db } = require('../config/firebase');
 const { createNotification } = require('../utils/notifications');
 const { uploadMultipleToCloudinary } = require('../middleware/upload');
 const ApiResponse = require('../utils/ApiResponse');
+const { isPrivileged } = require('../middleware/role');
 
 const VALID_LOCATIONS = ['maroua', 'garoua', 'ngaoundere', 'bertoua', 'yaounde', 'douala', 'bafoussam', 'ebolowa', 'buea'];
 const VALID_TYPES = ['apartment', 'studio', 'house', 'room'];
@@ -33,7 +34,7 @@ exports.getProperties = async (req, res) => {
 
   let query = db.collection('properties').where('isActive', '==', true);
 
-  const canSeeAll = req.user && ['admin', 'landlord'].includes(req.user.role);
+  const canSeeAll = req.user && isPrivileged(req.user.role) || req.user.role === 'landlord';
   if (status) {
     query = query.where('status', '==', status);
   }
@@ -118,7 +119,7 @@ exports.getPropertyById = async (req, res) => {
 
   const property = { id: doc.id, ...doc.data() };
 
-  if (!property.isActive && req.user?.role !== 'admin') {
+  if (!property.isActive && !isPrivileged(req.user?.role)) {
     return ApiResponse.notFound(res, 'Propriété introuvable');
   }
 
@@ -144,7 +145,7 @@ exports.createProperty = async (req, res) => {
     address, description, latitude, longitude, featured, amenities,
   } = req.body;
 
-  const landlordId = req.user.role === 'admin' && req.body.landlordId
+  const landlordId = isPrivileged(req.user.role) && req.body.landlordId
     ? req.body.landlordId
     : req.user.id;
 
@@ -190,7 +191,7 @@ exports.createProperty = async (req, res) => {
   };
 
   // Les admins peuvent publier directement
-  if (req.user.role === 'admin') {
+  if (isPrivileged(req.user.role)) {
     propertyData.status = 'available';
   }
 
@@ -228,7 +229,7 @@ exports.updateProperty = async (req, res) => {
   const property = doc.data();
 
   // Vérifier ownership (sauf admin)
-  if (req.user.role !== 'admin' && property.landlordId !== req.user.id) {
+  if (!isPrivileged(req.user.role) && property.landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Vous ne pouvez modifier que vos propres propriétés');
   }
 
@@ -272,7 +273,7 @@ exports.updatePropertyStatus = async (req, res) => {
     return ApiResponse.notFound(res, 'Propriété introuvable');
   }
 
-  if (req.user.role !== 'admin' && doc.data().landlordId !== req.user.id) {
+  if (!isPrivileged(req.user.role) && doc.data().landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 
@@ -289,7 +290,7 @@ exports.deleteProperty = async (req, res) => {
     return ApiResponse.notFound(res, 'Propriété introuvable');
   }
 
-  if (req.user.role !== 'admin' && doc.data().landlordId !== req.user.id) {
+  if (!isPrivileged(req.user.role) && doc.data().landlordId !== req.user.id) {
     return ApiResponse.forbidden(res, 'Accès refusé');
   }
 

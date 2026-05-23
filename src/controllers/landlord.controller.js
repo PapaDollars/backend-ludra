@@ -83,7 +83,11 @@ exports.getMyProperties = async (req, res) => {
   const total = properties.length;
   const paginated = properties.slice((pageNum - 1) * limitNum, pageNum * limitNum);
 
-  return ApiResponse.paginated(res, paginated, pageNum, limitNum, total);
+  // Attacher les infos du propriétaire (c'est l'utilisateur connecté lui-même)
+  const landlordInfo = { name: req.user.name, avatar: req.user.avatar || null };
+  const result = paginated.map((p) => ({ ...p, landlord: landlordInfo }));
+
+  return ApiResponse.paginated(res, result, pageNum, limitNum, total);
 };
 
 exports.getMyContacts = async (req, res) => {
