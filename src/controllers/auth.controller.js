@@ -3,7 +3,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
-const { sendResetPassword } = require('../services/email.service');
+const { envoyerCode, sendResetPassword } = require('../services/email.service');
 
 const generateTokens = (userId) => {
   const accessToken = jwt.sign({ id: userId }, process.env.JWT_SECRET, {
@@ -20,17 +20,103 @@ const formatUser = (id, data) => {
   return { id, ...safe };
 };
 
-exports.register = async (req, res) => {
-  const { name, password, role, city } = req.body;
+const fsAvecRetry = async (fn, tentatives = 3) => {
+  for (let i = 0; i < tentatives; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const isReseau = /ECONNRESET|socket hang up|CANCELLED/i.test(err.message);
+      if (!isReseau || i === tentatives - 1) throw err;
+      await new Promise(r => setTimeout(r, (i + 1) * 500));
+    }
+  }
+};
+
+exports.envoyerCodeInscription = async (req, res) => {
   const email = req.body.email?.trim().toLowerCase();
+
+  const usersRef = db.collection('users');
+  const emailSnap = await fsAvecRetry(() => usersRef.where('email', '==', email).limit(1).get());
+  if (!emailSnap.empty) {
+    return ApiResponse.badRequest(res, 'Cet email est déjà utilisé');
+  }
+
+  const codesRef = db.collection('codes_verification');
+  const docSnap = await fsAvecRetry(() => codesRef.doc(email).get());
+
+  let code;
+  if (docSnap.exists) {
+    const data = docSnap.data();
+    const nonExpire = data.expireAt.toDate() > new Date();
+    const nonVerifie = !data.verifie;
+    if (nonExpire && nonVerifie) {
+      code = data.code;
+    }
+  }
+
+  if (!code) {
+    code = Math.floor(100000 + Math.random() * 900000).toString();
+    await fsAvecRetry(() => codesRef.doc(email).set({
+      code,
+      type: 'inscription',
+      expireAt: new Date(Date.now() + 10 * 60 * 1000),
+      verifie: false,
+    }));
+  }
+
+  console.log(`[DEV] OTP ${email}: ${code}`);
+
+  try {
+    await envoyerCode(email, code, 'inscription');
+  } catch (err) {
+    console.error('[EMAIL] Échec envoi OTP inscription:', err.message);
+    return ApiResponse.error(res, 'Impossible d\'envoyer l\'email de vérification. Réessayez.', 500);
+  }
+
+  return ApiResponse.success(res, null, 'Code de vérification envoyé');
+};
+
+exports.register = async (req, res) => {
+  const email = req.body.email?.trim().toLowerCase();
+  const { verifyOnly, code } = req.body;
+
+  const codesRef = db.collection('codes_verification');
+
+  if (verifyOnly) {
+    if (!code) return ApiResponse.badRequest(res, 'Code requis');
+
+    const docSnap = await fsAvecRetry(() => codesRef.doc(email).get());
+    if (!docSnap.exists) {
+      return ApiResponse.badRequest(res, 'Aucun code envoyé pour cet email. Demandez un code d\'abord.');
+    }
+    const data = docSnap.data();
+    if (data.verifie) {
+      return ApiResponse.success(res, { valide: true }, 'Email déjà vérifié');
+    }
+    if (data.expireAt.toDate() < new Date()) {
+      return ApiResponse.badRequest(res, 'Code expiré. Demandez un nouveau code.');
+    }
+    if (data.code !== code) {
+      return ApiResponse.badRequest(res, 'Code incorrect');
+    }
+    await fsAvecRetry(() => codesRef.doc(email).update({ verifie: true }));
+    return ApiResponse.success(res, { valide: true }, 'Email vérifié avec succès');
+  }
+
+  // Vérifier que l'email a bien été validé par OTP
+  const docSnap = await fsAvecRetry(() => codesRef.doc(email).get());
+  if (!docSnap.exists || !docSnap.data().verifie) {
+    return ApiResponse.badRequest(res, 'Email non vérifié. Veuillez d\'abord vérifier votre email.');
+  }
+
+  const { name, password, role, city } = req.body;
   const phone = req.body.phone?.trim();
 
   const usersRef = db.collection('users');
 
-  // Vérifier unicité email et téléphone
   const [emailSnap, phoneSnap] = await Promise.all([
-    usersRef.where('email', '==', email).limit(1).get(),
-    usersRef.where('phone', '==', phone).limit(1).get(),
+    fsAvecRetry(() => usersRef.where('email', '==', email).limit(1).get()),
+    fsAvecRetry(() => usersRef.where('phone', '==', phone).limit(1).get()),
   ]);
 
   if (!emailSnap.empty) {
@@ -50,7 +136,7 @@ exports.register = async (req, res) => {
     role,
     city: city || '',
     avatar: null,
-    emailVerified: false,
+    emailVerified: true,
     phoneVerified: false,
     isActive: true,
     passwordHash,
@@ -59,11 +145,11 @@ exports.register = async (req, res) => {
     updatedAt: now,
   };
 
-  const docRef = await usersRef.add(userData);
+  const docRef = await fsAvecRetry(() => usersRef.add(userData));
   const { accessToken, refreshToken } = generateTokens(docRef.id);
 
-  // Stocker le refresh token
-  await docRef.update({ refreshToken });
+  await fsAvecRetry(() => docRef.update({ refreshToken }));
+  await fsAvecRetry(() => codesRef.doc(email).delete());
 
   return ApiResponse.created(res, {
     user: formatUser(docRef.id, userData),
@@ -79,9 +165,8 @@ exports.login = async (req, res) => {
   const isEmail = emailOrPhone.includes('@');
 
   const field = isEmail ? 'email' : 'phone';
-  // Normaliser : lowercase pour l'email, trim pour le téléphone
   const value = isEmail ? emailOrPhone.trim().toLowerCase() : emailOrPhone.trim();
-  const snap = await usersRef.where(field, '==', value).limit(1).get();
+  const snap = await fsAvecRetry(() => usersRef.where(field, '==', value).limit(1).get());
 
   if (snap.empty) {
     return ApiResponse.unauthorized(res, 'Identifiants incorrects');
@@ -104,7 +189,7 @@ exports.login = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = generateTokens(userDoc.id);
-  await userDoc.ref.update({ refreshToken, updatedAt: new Date().toISOString() });
+  await fsAvecRetry(() => userDoc.ref.update({ refreshToken, updatedAt: new Date().toISOString() }));
 
   return ApiResponse.success(res, {
     user: formatUser(userDoc.id, userData),
@@ -123,7 +208,7 @@ exports.refreshToken = async (req, res) => {
     return ApiResponse.unauthorized(res, 'Refresh token invalide ou expiré');
   }
 
-  const userDoc = await db.collection('users').doc(decoded.id).get();
+  const userDoc = await fsAvecRetry(() => db.collection('users').doc(decoded.id).get());
   if (!userDoc.exists) {
     return ApiResponse.unauthorized(res, 'Utilisateur introuvable');
   }
@@ -139,7 +224,7 @@ exports.refreshToken = async (req, res) => {
   }
 
   const tokens = generateTokens(userDoc.id);
-  await userDoc.ref.update({ refreshToken: tokens.refreshToken });
+  await fsAvecRetry(() => userDoc.ref.update({ refreshToken: tokens.refreshToken }));
 
   return ApiResponse.success(res, tokens, 'Token renouvelé');
 };
@@ -147,22 +232,21 @@ exports.refreshToken = async (req, res) => {
 exports.forgotPassword = async (req, res) => {
   const email = req.body.email?.trim().toLowerCase();
 
-  const snap = await db.collection('users').where('email', '==', email).limit(1).get();
+  const snap = await fsAvecRetry(() => db.collection('users').where('email', '==', email).limit(1).get());
 
-  // Toujours retourner 200 pour ne pas exposer les emails existants
   if (snap.empty) {
     return ApiResponse.success(res, null, 'Si un compte existe avec cet email, un lien de réinitialisation a été envoyé.');
   }
 
   const userDoc = snap.docs[0];
   const resetToken = uuidv4();
-  const resetExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1h
+  const resetExpiry = new Date(Date.now() + 60 * 60 * 1000).toISOString();
 
-  await userDoc.ref.update({
+  await fsAvecRetry(() => userDoc.ref.update({
     resetPasswordToken: resetToken,
     resetPasswordExpiry: resetExpiry,
     updatedAt: new Date().toISOString(),
-  });
+  }));
 
   const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
 
@@ -170,7 +254,6 @@ exports.forgotPassword = async (req, res) => {
     await sendResetPassword(email, resetUrl);
   } catch (emailErr) {
     console.error('[EMAIL] Échec envoi reset password:', emailErr.message);
-    // On log mais on retourne quand même 200 (sécurité : ne pas révéler l'état du serveur mail)
   }
 
   console.log(`[DEV] Reset URL: ${resetUrl}`);
@@ -181,7 +264,7 @@ exports.forgotPassword = async (req, res) => {
 exports.resetPassword = async (req, res) => {
   const { token, password } = req.body;
 
-  const snap = await db.collection('users').where('resetPasswordToken', '==', token).limit(1).get();
+  const snap = await fsAvecRetry(() => db.collection('users').where('resetPasswordToken', '==', token).limit(1).get());
 
   if (snap.empty) {
     return ApiResponse.badRequest(res, 'Token invalide ou expiré');
@@ -196,13 +279,13 @@ exports.resetPassword = async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 12);
 
-  await userDoc.ref.update({
+  await fsAvecRetry(() => userDoc.ref.update({
     passwordHash,
     resetPasswordToken: null,
     resetPasswordExpiry: null,
     refreshToken: null,
     updatedAt: new Date().toISOString(),
-  });
+  }));
 
   return ApiResponse.success(res, null, 'Mot de passe réinitialisé avec succès');
 };
@@ -212,9 +295,9 @@ exports.getMe = async (req, res) => {
 };
 
 exports.logout = async (req, res) => {
-  await db.collection('users').doc(req.user.id).update({
+  await fsAvecRetry(() => db.collection('users').doc(req.user.id).update({
     refreshToken: null,
     updatedAt: new Date().toISOString(),
-  });
+  }));
   return ApiResponse.success(res, null, 'Déconnexion réussie');
 };

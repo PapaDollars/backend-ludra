@@ -10,10 +10,10 @@ const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
 
 /**
  * @swagger
- * /auth/register:
+ * /auth/send-code:
  *   post:
  *     tags: [Auth]
- *     summary: Inscription d'un nouvel utilisateur
+ *     summary: Envoyer un code OTP de vérification d'email avant inscription
  *     security: []
  *     requestBody:
  *       required: true
@@ -21,13 +21,50 @@ const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name, email, phone, password, confirmPassword, role]
+ *             required: [email]
  *             properties:
- *               name:
- *                 type: string
  *               email:
  *                 type: string
  *                 format: email
+ *     responses:
+ *       200:
+ *         description: Code envoyé
+ *       400:
+ *         description: Email déjà utilisé
+ */
+router.post(
+  '/send-code',
+  [body('email').isEmail().withMessage('Email invalide').toLowerCase()],
+  validate,
+  ctrl.envoyerCodeInscription
+);
+
+/**
+ * @swagger
+ * /auth/register:
+ *   post:
+ *     tags: [Auth]
+ *     summary: Inscription — étape A (vérifier le code) ou étape B (créer le compte)
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [email]
+ *             properties:
+ *               verifyOnly:
+ *                 type: boolean
+ *                 description: "true = vérifier le code OTP seulement, false/absent = créer le compte"
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               code:
+ *                 type: string
+ *                 description: Code OTP reçu par email (requis si verifyOnly=true)
+ *               name:
+ *                 type: string
  *               phone:
  *                 type: string
  *                 example: "+237612345678"
@@ -42,23 +79,25 @@ const passwordRegex = /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/;
  *               city:
  *                 type: string
  *     responses:
+ *       200:
+ *         description: Email vérifié (étape A)
  *       201:
- *         description: Compte créé avec succès
- *       409:
- *         description: Email ou téléphone déjà utilisé
+ *         description: Compte créé avec succès (étape B)
+ *       400:
+ *         description: Code invalide / email non vérifié / données manquantes
  */
 router.post(
   '/register',
   [
-    body('name').trim().isLength({ min: 2 }).withMessage('Nom requis (min 2 caractères)'),
     body('email').isEmail().withMessage('Email invalide').toLowerCase(),
-    body('phone').matches(phoneRegex).withMessage('Numéro camerounais invalide'),
-    body('password').isLength({ min: 8 }).matches(passwordRegex).withMessage('Mot de passe trop faible (min 8 car., maj, min, chiffre)'),
-    body('confirmPassword').custom((val, { req }) => {
+    body('name').if(body('verifyOnly').not().equals('true')).trim().isLength({ min: 2 }).withMessage('Nom requis (min 2 caractères)'),
+    body('phone').if(body('verifyOnly').not().equals('true')).matches(phoneRegex).withMessage('Numéro camerounais invalide'),
+    body('password').if(body('verifyOnly').not().equals('true')).isLength({ min: 8 }).matches(passwordRegex).withMessage('Mot de passe trop faible (min 8 car., maj, min, chiffre)'),
+    body('confirmPassword').if(body('verifyOnly').not().equals('true')).custom((val, { req }) => {
       if (val !== req.body.password) throw new Error('Les mots de passe ne correspondent pas');
       return true;
     }),
-    body('role').isIn(['user', 'landlord']).withMessage('Rôle invalide'),
+    body('role').if(body('verifyOnly').not().equals('true')).isIn(['user', 'landlord']).withMessage('Rôle invalide'),
     body('city').optional().trim(),
   ],
   validate,
