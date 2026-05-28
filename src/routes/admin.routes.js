@@ -83,7 +83,7 @@ router.post(
   '/users',
   [
     body('name').trim().isLength({ min: 2 }),
-    body('email').isEmail().normalizeEmail(),
+    body('email').isEmail().normalizeEmail({ gmail_remove_dots: false }),
     body('phone').matches(/^(\+237|237)?[6|2|3]\d{8}$/),
     body('password').isLength({ min: 8 }),
     body('role').isIn(['user', 'landlord', 'admin']),

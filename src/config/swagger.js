@@ -128,6 +128,7 @@ const options = {
       { name: 'Visits', description: 'Planification de visites' },
       { name: 'Admin', description: 'Administration de la plateforme' },
       { name: 'Landlord', description: 'Espace propriétaire' },
+      { name: 'Notifications', description: 'Notifications in-app des utilisateurs' },
     ],
   },
   apis: ['./src/routes/*.js'],

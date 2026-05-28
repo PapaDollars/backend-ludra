@@ -3,6 +3,7 @@ const { db } = require('../config/firebase');
 const { uploadAvatarToCloudinary } = require('../middleware/upload');
 const ApiResponse = require('../utils/ApiResponse');
 const { isPrivileged } = require('../middleware/role');
+const { notifierTousLesAdmins } = require('../utils/notifications');
 
 const formatUser = (id, data) => {
   const { passwordHash, refreshToken, resetPasswordToken, resetPasswordExpiry, ...safe } = data;
@@ -106,6 +107,46 @@ exports.becomeLandlord = async (req, res) => {
   await db.collection('users').doc(userId).update(updates);
 
   return ApiResponse.success(res, { role: 'landlord' }, 'Votre compte a été mis à niveau en compte propriétaire');
+};
+
+exports.demanderSuppression = async (req, res) => {
+  const userId = req.user.id;
+  const userDoc = await db.collection('users').doc(userId).get();
+  if (!userDoc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
+
+  const userData = userDoc.data();
+
+  // Si une demande est déjà en cours
+  if (userData.deletionRequestedAt) {
+    return ApiResponse.badRequest(res, 'Une demande de suppression est déjà en cours');
+  }
+
+  const deletionAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
+
+  await userDoc.ref.update({
+    deletionRequestedAt: new Date().toISOString(),
+    deletionScheduledAt: deletionAt,
+    updatedAt: new Date().toISOString(),
+  });
+
+  await notifierTousLesAdmins({
+    type: 'deletion_request',
+    title: 'Demande de suppression de compte',
+    message: `${userData.name || userData.email} a demandé la suppression de son compte. Suppression prévue le ${new Date(deletionAt).toLocaleString('fr-FR')}.`,
+    targetUserId: userId,
+  });
+
+  return ApiResponse.success(res, null, 'Demande de suppression enregistrée. Votre compte sera supprimé dans 72h sauf si vous vous reconnectez.');
+};
+
+exports.annulerSuppression = async (req, res) => {
+  const userId = req.user.id;
+  await db.collection('users').doc(userId).update({
+    deletionRequestedAt: null,
+    deletionScheduledAt: null,
+    updatedAt: new Date().toISOString(),
+  });
+  return ApiResponse.success(res, null, 'Demande de suppression annulée');
 };
 
 exports.getUserById = async (req, res) => {

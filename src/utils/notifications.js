@@ -7,6 +7,7 @@ const createNotification = async (userId, {
   type, title, message,
   propertyId = null, propertyTitle = null,
   contactName = null, contactPhone = null, contactEmail = null,
+  targetUserId = null,
 }) => {
   await db.collection('notifications').add({
     userId,
@@ -18,9 +19,39 @@ const createNotification = async (userId, {
     contactName,
     contactPhone,
     contactEmail,
+    targetUserId,
     isRead: false,
     createdAt: new Date().toISOString(),
   });
+};
+
+/**
+ * Envoie une notification à tous les admins et au proprietaire
+ */
+const notifierTousLesAdmins = async ({ type, title, message, targetUserId = null }) => {
+  const snap = await db.collection('users')
+    .where('role', 'in', ['admin', 'proprietaire'])
+    .get();
+
+  const batch = db.batch();
+  snap.docs.forEach(doc => {
+    const ref = db.collection('notifications').doc();
+    batch.set(ref, {
+      userId: doc.id,
+      type,
+      title,
+      message,
+      targetUserId,
+      propertyId: null,
+      propertyTitle: null,
+      contactName: null,
+      contactPhone: null,
+      contactEmail: null,
+      isRead: false,
+      createdAt: new Date().toISOString(),
+    });
+  });
+  await batch.commit();
 };
 
 /**
@@ -39,4 +70,4 @@ const createAdminLog = async (adminId, adminName, { action, targetType, targetId
   });
 };
 
-module.exports = { createNotification, createAdminLog };
+module.exports = { createNotification, createAdminLog, notifierTousLesAdmins };

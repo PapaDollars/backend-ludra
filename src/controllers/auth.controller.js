@@ -189,12 +189,22 @@ exports.login = async (req, res) => {
   }
 
   const { accessToken, refreshToken } = generateTokens(userDoc.id);
-  await fsAvecRetry(() => userDoc.ref.update({ refreshToken, updatedAt: new Date().toISOString() }));
+
+  const loginUpdate = { refreshToken, updatedAt: new Date().toISOString() };
+
+  // Annuler automatiquement une demande de suppression en attente
+  if (userData.deletionRequestedAt) {
+    loginUpdate.deletionRequestedAt = null;
+    loginUpdate.deletionScheduledAt = null;
+  }
+
+  await fsAvecRetry(() => userDoc.ref.update(loginUpdate));
 
   return ApiResponse.success(res, {
     user: formatUser(userDoc.id, userData),
     accessToken,
     refreshToken,
+    deletionCancelled: !!userData.deletionRequestedAt,
   }, 'Connexion réussie');
 };
 

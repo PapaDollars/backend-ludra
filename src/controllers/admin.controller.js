@@ -2,7 +2,7 @@ const bcrypt = require('bcryptjs');
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
 const { isPrivileged } = require('../middleware/role');
-const { createNotification, createAdminLog } = require('../utils/notifications');
+const { createNotification, createAdminLog, notifierTousLesAdmins } = require('../utils/notifications');
 
 async function fetchLandlordMap(landlordIds) {
   const uniqueIds = [...new Set(landlordIds.filter(Boolean))];
@@ -284,17 +284,28 @@ exports.deleteUser = async (req, res) => {
   if (!doc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
 
   const userData = doc.data();
-  await doc.ref.update({ isActive: false, deletedAt: new Date().toISOString() });
+
+  // Marquer les notifications de demande de suppression comme lues
+  const notifsSnap = await db.collection('notifications')
+    .where('targetUserId', '==', id)
+    .where('type', '==', 'deletion_request')
+    .get();
+  const batch = db.batch();
+  notifsSnap.docs.forEach(n => batch.update(n.ref, { isRead: true }));
+  await batch.commit();
+
+  // Supprimer définitivement
+  await doc.ref.delete();
 
   await createAdminLog(req.user.id, req.user.name || 'Admin', {
     action: 'delete_user',
     targetType: 'user',
     targetId: id,
     targetName: userData.name || userData.email,
-    details: 'Suppression de compte (soft delete)',
+    details: 'Suppression définitive du compte',
   });
 
-  return ApiResponse.success(res, null, 'Utilisateur supprimé');
+  return ApiResponse.success(res, null, 'Compte supprimé définitivement');
 };
 
 // ─── PROPERTIES ──────────────────────────────────────────────────────────────

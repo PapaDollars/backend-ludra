@@ -6,7 +6,39 @@ const { authenticate } = require('../middleware/auth');
 const { requireRole } = require('../middleware/role');
 const ctrl = require('../controllers/contacts.controller');
 
-// Formulaire de contact général (public, sans authentification)
+/**
+ * @swagger
+ * /contacts/general:
+ *   post:
+ *     tags: [Contacts]
+ *     summary: Envoyer un message général à l'équipe Ludra (public)
+ *     description: Formulaire de contact public accessible sans authentification.
+ *     security: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, email, subject, message]
+ *             properties:
+ *               name:
+ *                 type: string
+ *                 minLength: 2
+ *               email:
+ *                 type: string
+ *                 format: email
+ *               subject:
+ *                 type: string
+ *               message:
+ *                 type: string
+ *                 minLength: 10
+ *     responses:
+ *       200:
+ *         description: Message envoyé avec succès
+ *       400:
+ *         description: Données invalides
+ */
 router.post(
   '/general',
   [

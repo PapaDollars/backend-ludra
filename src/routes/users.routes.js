@@ -152,6 +152,55 @@ router.put(
  */
 router.patch('/become-landlord', authenticate, requireRole('user'), upload.single('avatar'), ctrl.becomeLandlord);
 
+/**
+ * @swagger
+ * /users/request-deletion:
+ *   post:
+ *     tags: [Users]
+ *     summary: Demander la suppression de son compte
+ *     description: >
+ *       L'utilisateur demande la suppression de son compte. Un délai de 72h est accordé
+ *       avant que l'admin puisse supprimer définitivement. La connexion avant expiration
+ *       du délai annule automatiquement la demande.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Demande de suppression enregistrée
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 message: { type: string }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     deletionRequestedAt: { type: string, format: date-time }
+ *                     deletionScheduledAt: { type: string, format: date-time, description: "Date limite (72h après la demande)" }
+ *       400:
+ *         description: Demande déjà en cours
+ */
+router.post('/request-deletion', authenticate, ctrl.demanderSuppression);
+
+/**
+ * @swagger
+ * /users/cancel-deletion:
+ *   post:
+ *     tags: [Users]
+ *     summary: Annuler la demande de suppression de son compte
+ *     description: Annule une demande de suppression en attente. Accessible uniquement si une demande est en cours.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Demande de suppression annulée
+ *       400:
+ *         description: Aucune demande de suppression en cours
+ */
+router.post('/cancel-deletion', authenticate, ctrl.annulerSuppression);
+
 router.get('/:id', authenticate, ctrl.getUserById);
 
 module.exports = router;
