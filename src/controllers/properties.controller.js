@@ -7,6 +7,11 @@ const { isPrivileged } = require('../middleware/role');
 const VALID_LOCATIONS = ['maroua', 'garoua', 'ngaoundere', 'bertoua', 'yaounde', 'douala', 'bafoussam', 'ebolowa', 'buea'];
 const VALID_TYPES = ['apartment', 'studio', 'house', 'room'];
 
+const sanitizeTitle = (raw) => {
+  const cleaned = String(raw).replace(/[^\p{L}\p{N}\s.,!?;:'"()\-]/gu, '').trim();
+  return cleaned.toLowerCase().replace(/^\p{L}/u, c => c.toUpperCase());
+};
+
 // Récupère nom+avatar de plusieurs landlords en une seule passe
 async function fetchLandlordMap(landlordIds) {
   const uniqueIds = [...new Set(landlordIds.filter(Boolean))];
@@ -175,7 +180,7 @@ exports.createProperty = async (req, res) => {
 
   const now = new Date().toISOString();
   const propertyData = {
-    title: title.trim(),
+    title: sanitizeTitle(title),
     type,
     price: Number(price),
     location,
@@ -248,7 +253,7 @@ exports.updateProperty = async (req, res) => {
 
   allowed.forEach((field) => {
     if (req.body[field] !== undefined) {
-      updates[field] = req.body[field];
+      updates[field] = field === 'title' ? sanitizeTitle(req.body[field]) : req.body[field];
     }
   });
 

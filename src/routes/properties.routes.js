@@ -127,7 +127,7 @@ router.post(
   '/',
   authenticate,
   requireRole('landlord', 'admin', 'proprietaire'),
-  upload.array('images', 10),
+  upload.array('images', 8),
   [
     body('title').trim().notEmpty().withMessage('Titre requis'),
     body('type').isIn(['apartment', 'studio', 'house', 'room']).withMessage('Type invalide'),
@@ -183,7 +183,7 @@ router.put(
   '/:id',
   authenticate,
   requireRole('landlord', 'admin', 'proprietaire'),
-  upload.array('images', 10),
+  upload.array('images', 8),
   ctrl.updateProperty
 );
 
