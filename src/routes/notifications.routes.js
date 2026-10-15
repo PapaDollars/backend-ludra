@@ -3,31 +3,33 @@ const router = express.Router();
 const { authenticate } = require('../middleware/auth');
 const ctrl = require('../controllers/notifications.controller');
 
+router.use(authenticate);
+
 /**
  * @swagger
  * /notifications:
  *   get:
  *     tags: [Notifications]
- *     summary: Récupérer les notifications de l'utilisateur connecté
+ *     summary: Centre de notifications (V2.1) — NotificationPage, plus récentes d'abord
  *     security:
  *       - BearerAuth: []
  *     parameters:
  *       - in: query
- *         name: unreadOnly
- *         schema: { type: boolean }
+ *         name: cursor
+ *         schema: { type: string }
  *       - in: query
  *         name: limit
- *         schema: { type: integer, default: 30 }
+ *         schema: { type: integer, default: 20 }
  *     responses:
  *       200:
- *         description: Liste des notifications + compteur non lues
+ *         description: "{ items: AppNotification[], nextCursor, unread }"
  */
-router.get('/', authenticate, ctrl.getNotifications);
+router.get('/', ctrl.getNotifications);
 
 /**
  * @swagger
  * /notifications/read-all:
- *   patch:
+ *   post:
  *     tags: [Notifications]
  *     summary: Marquer toutes les notifications comme lues
  *     security:
@@ -36,12 +38,12 @@ router.get('/', authenticate, ctrl.getNotifications);
  *       200:
  *         description: Toutes les notifications marquées comme lues
  */
-router.patch('/read-all', authenticate, ctrl.markAllAsRead);
+router.post('/read-all', ctrl.markAllAsRead);
 
 /**
  * @swagger
  * /notifications/{id}/read:
- *   patch:
+ *   post:
  *     tags: [Notifications]
  *     summary: Marquer une notification comme lue
  *     security:
@@ -54,26 +56,9 @@ router.patch('/read-all', authenticate, ctrl.markAllAsRead);
  *     responses:
  *       200:
  *         description: Notification marquée comme lue
+ *       404:
+ *         description: Notification introuvable (ou appartenant à un autre utilisateur)
  */
-router.patch('/:id/read', authenticate, ctrl.markAsRead);
-
-/**
- * @swagger
- * /notifications/{id}:
- *   delete:
- *     tags: [Notifications]
- *     summary: Supprimer une notification
- *     security:
- *       - BearerAuth: []
- *     parameters:
- *       - in: path
- *         name: id
- *         required: true
- *         schema: { type: string }
- *     responses:
- *       200:
- *         description: Notification supprimée
- */
-router.delete('/:id', authenticate, ctrl.deleteNotification);
+router.post('/:id/read', ctrl.markAsRead);
 
 module.exports = router;

@@ -1,14 +1,13 @@
 const express = require('express');
 const router = express.Router();
 
+// Routes conservées de la V1 (encore utilisées par le front)
 router.use('/auth', require('./auth.routes'));
 router.use('/users', require('./users.routes'));
-router.use('/properties', require('./properties.routes'));
-router.use('/favorites', require('./favorites.routes'));
 router.use('/contacts', require('./contacts.routes'));
-router.use('/visits', require('./visits.routes'));
+
+// Routes V2.1 (docs/API_CONTRACT_V2.1.md côté frontend)
 router.use('/admin', require('./admin.routes'));
 router.use('/notifications', require('./notifications.routes'));
-router.use('/landlord', require('./landlord.routes'));
 
 module.exports = router;
