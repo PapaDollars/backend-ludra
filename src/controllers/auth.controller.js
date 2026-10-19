@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
 const { db } = require('../config/firebase');
 const ApiResponse = require('../utils/ApiResponse');
+const { invalidateUser } = require('../utils/userCache');
 const { envoyerCode, sendResetPassword } = require('../services/email.service');
 
 const generateTokens = (userId) => {
@@ -145,10 +146,18 @@ exports.register = async (req, res) => {
     updatedAt: now,
   };
 
-  const docRef = await fsAvecRetry(() => usersRef.add(userData));
+  // Id choisi avant l'écriture : 1 seule écriture (au lieu de add + update), et un nouvel essai
+  // après une coupure réseau ne peut pas créer un second compte (create() refuse un id existant).
+  const docRef = usersRef.doc();
   const { accessToken, refreshToken } = generateTokens(docRef.id);
-
-  await fsAvecRetry(() => docRef.update({ refreshToken }));
+  await fsAvecRetry(async () => {
+    try {
+      await docRef.create({ ...userData, refreshToken });
+    } catch (err) {
+      if (err.code !== 6) throw err; // 6 = ALREADY_EXISTS : le 1er essai avait abouti
+    }
+  });
+  invalidateUser(docRef.id);
   await fsAvecRetry(() => codesRef.doc(email).delete());
 
   return ApiResponse.created(res, {
@@ -199,6 +208,7 @@ exports.login = async (req, res) => {
   }
 
   await fsAvecRetry(() => userDoc.ref.update(loginUpdate));
+  invalidateUser(userDoc.id, { list: false });
 
   return ApiResponse.success(res, {
     user: formatUser(userDoc.id, userData),
@@ -235,6 +245,7 @@ exports.refreshToken = async (req, res) => {
 
   const tokens = generateTokens(userDoc.id);
   await fsAvecRetry(() => userDoc.ref.update({ refreshToken: tokens.refreshToken }));
+  invalidateUser(userDoc.id, { list: false });
 
   return ApiResponse.success(res, tokens, 'Token renouvelé');
 };
@@ -257,6 +268,7 @@ exports.forgotPassword = async (req, res) => {
     resetPasswordExpiry: resetExpiry,
     updatedAt: new Date().toISOString(),
   }));
+  invalidateUser(userDoc.id, { list: false });
 
   const resetUrl = `${process.env.FRONTEND_URL}/auth/reset-password?token=${resetToken}`;
 
@@ -296,6 +308,7 @@ exports.resetPassword = async (req, res) => {
     refreshToken: null,
     updatedAt: new Date().toISOString(),
   }));
+  invalidateUser(userDoc.id, { list: false });
 
   return ApiResponse.success(res, null, 'Mot de passe réinitialisé avec succès');
 };
@@ -309,5 +322,6 @@ exports.logout = async (req, res) => {
     refreshToken: null,
     updatedAt: new Date().toISOString(),
   }));
+  invalidateUser(req.user.id, { list: false });
   return ApiResponse.success(res, null, 'Déconnexion réussie');
 };

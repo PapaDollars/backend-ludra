@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const { db } = require('../config/firebase');
+const { getUser } = require('../utils/userCache');
 const ApiResponse = require('../utils/ApiResponse');
 
 const authenticate = async (req, res, next) => {
@@ -13,13 +13,11 @@ const authenticate = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const userDoc = await db.collection('users').doc(decoded.id).get();
+    const user = await getUser(decoded.id); // cache mémoire 60 s (voir utils/userCache.js)
 
-    if (!userDoc.exists) {
+    if (!user) {
       return ApiResponse.unauthorized(res, 'Utilisateur introuvable');
     }
-
-    const user = { id: userDoc.id, ...userDoc.data() };
 
     if (!user.isActive) {
       return res.status(403).json({ success: false, code: 'ACCOUNT_DISABLED', message: 'Votre compte a été restreint.' });
@@ -44,13 +42,7 @@ const optionalAuth = async (req, res, next) => {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const userDoc = await db.collection('users').doc(decoded.id).get();
-
-    if (userDoc.exists) {
-      req.user = { id: userDoc.id, ...userDoc.data() };
-    } else {
-      req.user = null;
-    }
+    req.user = await getUser(decoded.id);
   } catch {
     req.user = null;
   }

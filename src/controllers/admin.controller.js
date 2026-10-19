@@ -3,6 +3,7 @@ const ApiResponse = require('../utils/ApiResponse');
 const { isPrivileged } = require('../middleware/role');
 const { cursorPage } = require('../utils/pagination');
 const { createAuditEntry } = require('../utils/audit');
+const { getAllUsers, invalidateUser } = require('../utils/userCache');
 
 // Permissions RBAC V2.1 (miroir de frontend-ludra/src/lib/adminPermissions.ts)
 const ADMIN_PERMISSIONS = [
@@ -31,13 +32,21 @@ const toAdminUser = (id, d) => ({
 
 /** GET /admin/stats → `AdminStats`. */
 exports.getStats = async (req, res) => {
-  const usersSnap = await db.collection('users').get();
-  const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  const users = usersSnap.docs.map((d) => d.data()).filter((u) => u.role !== 'proprietaire');
+  // Agrégations count() : 1 lecture facturée par tranche de 1 000 documents, au lieu de lire
+  // toute la collection. Le compte principal (exclu des totaux) est lu à part (1 document).
+  const usersRef = db.collection('users');
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const [allCount, recentCount, ownersSnap] = await Promise.all([
+    usersRef.count().get(),
+    usersRef.where('createdAt', '>=', weekAgo.toISOString()).count().get(),
+    usersRef.where('role', '==', 'proprietaire').get(),
+  ]);
+  const owners = ownersSnap.docs.map((d) => d.data());
+  const recentOwners = owners.filter((u) => u.createdAt && new Date(u.createdAt) >= weekAgo).length;
 
   return ApiResponse.success(res, {
-    users: users.length,
-    usersNew7d: users.filter((u) => u.createdAt && new Date(u.createdAt).getTime() >= weekAgo).length,
+    users: allCount.data().count - owners.length,
+    usersNew7d: recentCount.data().count - recentOwners,
     // À calculer quand les collections V2.1 existeront (KYC, annonces, signalements, preuves, paiements).
     pendingKyc: 0,
     pendingListings: 0,
@@ -60,12 +69,13 @@ exports.getUsers = async (req, res) => {
     return ApiResponse.forbidden(res, 'Permission insuffisante pour filtrer par administrateur');
   }
 
-  let query = db.collection('users');
-  if (role) query = query.where('role', '==', role);
-  const snap = await query.get();
+  // Liste en cache 2 min (utils/userCache.js) : la recherche plein texte se fait en mémoire,
+  // donc une page ou une frappe ne relit plus toute la collection.
+  const all = await getAllUsers();
 
-  let users = snap.docs
-    .map((d) => toAdminUser(d.id, d.data()))
+  let users = all
+    .filter((d) => !role || d.data.role === role)
+    .map((d) => toAdminUser(d.id, d.data))
     .filter((u) => u.role !== 'proprietaire') // le compte principal n'apparaît jamais
     .filter((u) => canSeeAdmins || u.role !== 'admin');
 
@@ -117,7 +127,7 @@ exports.updateUser = async (req, res) => {
   const updates = { updatedAt: new Date().toISOString() };
   if (role !== undefined) updates.role = role;
   const finalRole = role ?? target.role;
-  if (!isPrivileged(finalRole)) updates.adminPermissions = [];
+  if (!isPrivileged(finalRole)) { if ((target.adminPermissions || []).length) updates.adminPermissions = []; }
   else if (adminPermissions !== undefined) updates.adminPermissions = [...new Set(adminPermissions)];
   if (isActive !== undefined) {
     updates.isActive = isActive;
@@ -125,7 +135,12 @@ exports.updateUser = async (req, res) => {
     if (!isActive) updates.refreshToken = null; // déconnexion forcée
   }
 
-  await doc.ref.update(updates);
+  // Rien ne change (ex. même rôle renvoyé) : pas d'écriture inutile
+  const changed = Object.keys(updates).some((k) => k !== 'updatedAt' && JSON.stringify(target[k] ?? null) !== JSON.stringify(updates[k] ?? null));
+  if (changed) {
+    await doc.ref.update(updates);
+    invalidateUser(id);
+  }
   const after = toAdminUser(id, { ...target, ...updates });
 
   const changes = [];

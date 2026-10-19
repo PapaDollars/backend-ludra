@@ -23,6 +23,12 @@ Documentation Swagger : `GET /api/docs` (JSON : `GET /api/docs.json`). Santé : 
 
 Les routes V1 `/properties`, `/favorites`, `/visits`, `/landlord`, les demandes de contact et les anciennes routes admin ont été supprimées (2026-10-15) : le front V2.1 ne les utilise plus.
 
+## Quota Firestore (forfait Spark)
+
+- `utils/userCache.js` : cache mémoire des utilisateurs (60 s par utilisateur pour l'authentification, 2 min pour la liste du back-office). **Toute écriture sur `users/{id}` doit appeler `invalidateUser(id)`.** Prévu pour une seule instance ; avec plusieurs instances, réduire les durées.
+- `firestore.indexes.json` : index composites (notifications paginées). À créer avant ou juste après le déploiement : `firebase deploy --only firestore:indexes` (ou console Firebase → Firestore → Index). Sans l'index, `GET /notifications` fonctionne quand même (lecture complète, message d'avertissement dans les logs).
+- Règles pour les prochains endpoints : `frontend-ludra/docs/API_CONTRACT_V2.1.md`, section « Règles de coût Firestore ».
+
 ## Utilitaires pour les endpoints V2.1
 
 - `utils/pagination.js` : `cursorPage(liste, cursor, limit)` → `{ items, nextCursor, total }`

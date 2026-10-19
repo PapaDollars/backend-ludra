@@ -1,6 +1,7 @@
 const { db } = require('../config/firebase');
 const { uploadAvatarToCloudinary } = require('../middleware/upload');
 const ApiResponse = require('../utils/ApiResponse');
+const { invalidateUser } = require('../utils/userCache');
 const { notifierTousLesAdmins } = require('../utils/notifications');
 
 const formatUser = (id, data) => {
@@ -28,9 +29,11 @@ exports.updateProfile = async (req, res) => {
   if (whatsapp !== undefined) updates.whatsapp = whatsapp ? whatsapp.trim() : null;
 
   await db.collection('users').doc(userId).update(updates);
+  invalidateUser(userId);
 
-  const updatedDoc = await db.collection('users').doc(userId).get();
-  return ApiResponse.success(res, formatUser(userId, updatedDoc.data()), 'Profil mis à jour');
+  // Réponse construite sans relire le document (req.user vient d'être chargé par authenticate)
+  const { id: _id, ...current } = req.user;
+  return ApiResponse.success(res, formatUser(userId, { ...current, ...updates }), 'Profil mis à jour');
 };
 
 exports.updateAvatar = async (req, res) => {
@@ -45,16 +48,14 @@ exports.updateAvatar = async (req, res) => {
     avatarPublicId,
     updatedAt: new Date().toISOString(),
   });
+  invalidateUser(req.user.id, { list: false });
 
   return ApiResponse.success(res, { avatar: avatarUrl }, 'Avatar mis à jour');
 };
 
 exports.demanderSuppression = async (req, res) => {
   const userId = req.user.id;
-  const userDoc = await db.collection('users').doc(userId).get();
-  if (!userDoc.exists) return ApiResponse.notFound(res, 'Utilisateur introuvable');
-
-  const userData = userDoc.data();
+  const userData = req.user; // déjà chargé par authenticate (pas de 2e lecture)
 
   // Si une demande est déjà en cours
   if (userData.deletionRequestedAt) {
@@ -63,11 +64,12 @@ exports.demanderSuppression = async (req, res) => {
 
   const deletionAt = new Date(Date.now() + 72 * 60 * 60 * 1000).toISOString();
 
-  await userDoc.ref.update({
+  await db.collection('users').doc(userId).update({
     deletionRequestedAt: new Date().toISOString(),
     deletionScheduledAt: deletionAt,
     updatedAt: new Date().toISOString(),
   });
+  invalidateUser(userId, { list: false });
 
   await notifierTousLesAdmins({
     kind: 'system',
@@ -82,11 +84,15 @@ exports.demanderSuppression = async (req, res) => {
 
 exports.annulerSuppression = async (req, res) => {
   const userId = req.user.id;
-  await db.collection('users').doc(userId).update({
-    deletionRequestedAt: null,
-    deletionScheduledAt: null,
-    updatedAt: new Date().toISOString(),
-  });
+  // Aucune demande en cours : rien à réécrire
+  if (req.user.deletionRequestedAt || req.user.deletionScheduledAt) {
+    await db.collection('users').doc(userId).update({
+      deletionRequestedAt: null,
+      deletionScheduledAt: null,
+      updatedAt: new Date().toISOString(),
+    });
+    invalidateUser(userId, { list: false });
+  }
   return ApiResponse.success(res, null, 'Demande de suppression annulée');
 };
 

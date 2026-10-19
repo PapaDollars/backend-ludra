@@ -12,7 +12,7 @@ const buildNotification = (userId, { kind = 'system', title, body, href = null, 
   body,
   href,
   targetUserId,
-  read: false,
+  isRead: false, // champ canonique (requêtes « non lues » : where('isRead', '==', false))
   createdAt: new Date().toISOString(),
 });
 
