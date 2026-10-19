@@ -79,6 +79,11 @@ app.get('/api/docs.json', (req, res) => {
 });
 
 // ─── HEALTHCHECK ──────────────────────────────────────────────────────────────
+// Racine : sondes de l'hébergeur (Render envoie HEAD /) et visites directes
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'Ludra API', health: '/health', docs: '/api/docs' });
+});
+
 app.get('/health', (req, res) => {
   res.json({
     success: true,
