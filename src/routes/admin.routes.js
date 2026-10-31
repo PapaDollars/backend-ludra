@@ -5,7 +5,7 @@ const { requireRole, requirePermission } = require('../middleware/role');
 const ctrl = require('../controllers/admin.controller');
 
 // Back-office V2.1 : toutes les routes exigent un compte admin|proprietaire (+ permission par route).
-// Les autres endpoints /admin/* du contrat (queue, kyc, listings, reviews, reports, payments, proofs,
+// Les autres endpoints /admin/* du contrat (queue, kyc, listings, reviews, reports, payments,
 // settings, audit) sont à ajouter ici — docs/API_CONTRACT_V2.1.md, étape 11.
 router.use(authenticate, requireRole('admin', 'proprietaire'));
 
@@ -79,5 +79,56 @@ router.get('/users', requirePermission('manage_users'), ctrl.getUsers);
  *         description: Données invalides / motif manquant
  */
 router.patch('/users/:id', requirePermission('manage_users'), ctrl.updateUser);
+
+/**
+ * @swagger
+ * /admin/proofs:
+ *   get:
+ *     tags: [Admin]
+ *     summary: Preuves du badge « Formé » (AdminProof[]) — permission review_kyc
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [a_verifier, valide, rejete], default: a_verifier }
+ *     responses:
+ *       200:
+ *         description: AdminProof[]
+ */
+router.get('/proofs', requirePermission('review_kyc'), ctrl.getProofs);
+
+/**
+ * @swagger
+ * /admin/proofs/{id}/decision:
+ *   post:
+ *     tags: [Admin]
+ *     summary: Valider / refuser une preuve (approve active le badge Formé). Journalisé.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [decision]
+ *             properties:
+ *               decision: { type: string, enum: [approve, reject] }
+ *               reason: { type: string, description: "Obligatoire (≥ 5 car.) pour un refus" }
+ *     responses:
+ *       200:
+ *         description: Décision enregistrée
+ *       409:
+ *         description: ALREADY_DECIDED
+ *       422:
+ *         description: VALIDATION_ERROR (motif manquant)
+ */
+router.post('/proofs/:id/decision', requirePermission('review_kyc'), ctrl.decideProof);
 
 module.exports = router;

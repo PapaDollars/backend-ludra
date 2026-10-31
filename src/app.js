@@ -36,7 +36,8 @@ app.use(cors({
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'], // Idempotency-Key : paiements
+  exposedHeaders: ['Content-Disposition'], // nom du fichier CSV (export shortlist)
 }));
 
 // Rate limiting global

@@ -3,7 +3,7 @@ const errorHandler = (err, req, res, next) => {
 
   // Toujours logger le détail complet côté serveur
   console.error(`[ERROR] ${req.method} ${req.originalUrl} → ${statusCode} | ${err.message}`);
-  if (statusCode >= 500) console.error(err.stack);
+  if (statusCode >= 500 && err.name !== 'AppError') console.error(err.stack); // AppError : erreur métier volontaire
 
   // ── Erreurs fonctionnelles connues (message utile pour le client) ──
   if (err.name === 'JsonWebTokenError') {
@@ -19,9 +19,15 @@ const errorHandler = (err, req, res, next) => {
     return res.status(400).json({ success: false, message: 'Fichier trop volumineux (max 5 MB).' });
   }
 
-  // ── Erreurs 4xx : message de l'erreur (contrôlé par le code métier) ──
-  if (statusCode >= 400 && statusCode < 500) {
-    return res.status(statusCode).json({ success: false, message: err.message || 'Requête invalide.' });
+  // ── Erreurs 4xx, et erreurs métier volontaires (AppError 501/503) : message contrôlé par le code ──
+  if ((statusCode >= 400 && statusCode < 500) || err.name === 'AppError') {
+    return res.status(statusCode).json({
+      success: false,
+      message: err.message || 'Requête invalide.',
+      // Code métier et erreurs de champ (utils/AppError.js) — lus par le front (ApiError.code / .errors)
+      ...(typeof err.code === 'string' && /^[A-Z_]+$/.test(err.code) && { code: err.code }),
+      ...(Array.isArray(err.errors) && { errors: err.errors }),
+    });
   }
 
   // ── Erreurs 5xx : message générique, on ne divulgue rien ──
