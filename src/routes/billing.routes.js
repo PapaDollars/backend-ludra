@@ -45,6 +45,10 @@ const subscriptions = express.Router();
  */
 subscriptions.get('/me', authenticate, ctrl.getMySubscriptions);
 
+// ─── /payments/webhooks (public : appelé par l'opérateur, monté avant /payments) ──
+const webhooks = express.Router();
+webhooks.post('/orange/:secret', rateLimit({ windowMs: 60 * 1000, max: 120 }), ctrl.orangeWebhook);
+
 // ─── /payments ───────────────────────────────────────────────────────────────
 const payments = express.Router();
 payments.use(authenticate);
@@ -114,4 +118,4 @@ payments.post('/subscription', createLimiter, ctrl.subscribe);
  */
 payments.get('/:id', ctrl.getPayment);
 
-module.exports = { plans, subscriptions, payments };
+module.exports = { plans, subscriptions, payments, webhooks };

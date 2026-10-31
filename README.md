@@ -19,11 +19,13 @@ Documentation Swagger : `GET /api/docs` (JSON : `GET /api/docs.json`). Santé : 
 | `/api/users/*` | V1 conservée : `PUT /profile`, `POST /profile/avatar`, `POST /request-deletion`, `POST /cancel-deletion` |
 | `/api/contacts/general` | V1 conservée : `POST` (formulaire de la page Aide, public) |
 | `/api/notifications` | V2.1 : `GET /` (`NotificationPage`), `POST /:id/read`, `POST /read-all` |
-| `/api/admin/*` | V2.1 : `GET /stats`, `GET /users`, `PATCH /users/:id`, `GET /proofs`, `POST /proofs/:id/decision` — les autres endpoints back-office sont à ajouter |
+| `/api/admin/*` | V2.1 : `GET /stats`, `GET /users`, `PATCH /users/:id`, `GET /proofs`, `POST /proofs/:id/decision`, `GET /payments`, `POST /payments/:id/reconcile` — les autres endpoints back-office sont à ajouter |
 | `/api/search/*` | V2.1 : `GET /` et `GET /count` (**univers `personnel` uniquement** ; `immobilier` / `services` → `501 NOT_IMPLEMENTED`), `GET /options`, `GET /suggestions` |
 | `/api/candidates/:id`, `/api/me/candidate-profile` | V2.1 placement du personnel (M10–M11) |
 | `/api/recruiter/*` | V2.1 (M13) : `GET /access`, `GET` / `POST /shortlist`, `DELETE /shortlist/:candidateId`, `GET /shortlist/export` (CSV) |
-| `/api/plans`, `/api/subscriptions/me`, `/api/payments/*` | V2.1 (M08, M12, M13) : `GET /plans?audience=`, `GET /subscriptions/me`, `POST /payments/subscription`, `GET /payments/:id` |
+| `/api/plans`, `/api/subscriptions/me`, `/api/payments/*` | V2.1 (M08, M12, M13) : `GET /plans?audience=`, `GET /subscriptions/me`, `POST /payments/subscription`, `GET /payments/:id`, `POST /payments/webhooks/orange/:secret` (callback Orange, public : sert de déclencheur, le statut est toujours revérifié auprès d'Orange) |
+| `/api/me/*` | V2.1 : `GET /candidate-profile`, `GET /payments`, `GET /payments/:id` (historique et reçus, `receiptNumber` séquentiel `REC-AAAA-NNNNNN`), `GET /unlocks` (toujours `[]`) |
+| `/api/conversations/*` | V2.1 messagerie (M05) : `GET /`, `POST /open`, `GET /:id`, `GET` / `POST /:id/messages`, `POST /:id/read`, `POST` / `DELETE /:id/block` |
 | `/api/drafts/*`, `/api/uploads` | V2.1 publication « + Publier » (M06) : `GET` / `POST /drafts`, `GET` / `PATCH` / `DELETE /drafts/:id`, `POST /drafts/:id/publish` (**univers `personnel` uniquement** ; `immobilier` / `services` → `501 NOT_IMPLEMENTED`, brouillon conservé), `POST /uploads` (image ≤ 10 Mo → Cloudinary `ludra/publications`) |
 
 ## Placement du personnel (modules 10 à 13)
@@ -41,8 +43,9 @@ Documentation Swagger : `GET /api/docs` (JSON : `GET /api/docs.json`). Santé : 
 **Reste à brancher** (modules non encore implémentés) :
 
 - **Création des profils** : via « + Publier » (`POST /drafts/:id/publish`, `services/drafts.service.js`). Profils de démo pour tester : `node scripts/seed-demo-candidates.js --apply` (5 profils `demo-c-00X`, suppression avec `--remove`).
-- **Contact d'un candidat** : `POST /conversations/open` (module 05, à créer) doit refuser avec `403 PLAN_REQUIRED` si `canContactCandidates(recruteur)` est faux, sauf si le candidat a initié l'échange.
-- **Paiements réels** : `PAYMENT_PROVIDER=simulation` (défaut hors production : `paid` après ~6 s, numéro finissant par `0000` = échec). En production, aucun fournisseur n'est branché → `503 PAYMENT_UNAVAILABLE`. Ajouter le fournisseur choisi dans `services/mobileMoney.js` et un webhook signé qui appelle `settlePayment()`.
+- **Messagerie** (`services/messaging.service.js`) : ouvrir une conversation VERS un candidat actif exige le droit `contact` du forfait recruteur (`403 PLAN_REQUIRED`), sauf conversation déjà existante (donc initiée par le candidat). Le recruteur qui a ouvert est revérifié à chaque envoi : forfait expiré ⇒ il ne peut plus écrire. Coordonnées et liens masqués côté serveur. **Pas encore** : images (`501`), présence en ligne, compteur `unreadMessages` de `/me/counters`, annonces et services comme objet de conversation (seul un profil candidat est accepté en `itemId`).
+- **Paiements réels** : `PAYMENT_PROVIDER=simulation` (défaut hors production : `paid` après ~6 s, numéro finissant par `0000` = échec), `none` (503) ou `orange_cm` (Orange Money Cameroun, opérateur `orange_money` uniquement ; `mtn_momo` ⇒ 503). **Intégration Orange non validée par Orange** : chemins issus de clients communautaires, voir l'en-tête de `services/providers/orangeCM.js` et les variables `ORANGE_*` de `.env.example`. Réconciliation : à chaque lecture du paiement, tâche planifiée (`services/paymentReconciler.js`) et `POST /admin/payments/:id/reconcile`. MTN n'est pas branché : côté front, `NEXT_PUBLIC_PAYMENT_OPERATORS=orange_money` masque MTN.
+- **Tests** : `npm test` (Node `node:test`, sans dépendance). `tests/helpers/fakeFirestore.js` remplace Firestore en mémoire pour exercer les vrais services : paiements et reçus, abonnements, droits recruteur, messagerie, Orange (avec `fetch` simulé).
 - **Favoris** (`isFavorite`) toujours `false` tant que `/saved` n'existe pas ; badge « Identité vérifiée » = `kycStatus === 'verifie'` recopié à la publication, en attendant le module KYC.
 - **Preuves « Formé »** : une preuve `training` est créée automatiquement quand un profil est publié avec une formation ; le candidat ne peut pas encore joindre de document justificatif (pas d'endpoint côté front).
 

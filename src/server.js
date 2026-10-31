@@ -1,5 +1,6 @@
 require('dotenv').config();
 const app = require('./app');
+const { startPaymentReconciler } = require('./services/paymentReconciler');
 
 const PORT = process.env.PORT || 5000;
 
@@ -12,6 +13,8 @@ const server = app.listen(PORT, () => {
   console.log(`   Health        : http://localhost:${PORT}/health\n`);
 });
 
+const stopReconciler = startPaymentReconciler();
+
 process.on('unhandledRejection', (err) => {
   console.error('[UnhandledRejection]', err.message);
   server.close(() => process.exit(1));
@@ -19,5 +22,6 @@ process.on('unhandledRejection', (err) => {
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM reçu. Arrêt propre...');
+  if (stopReconciler) stopReconciler();
   server.close(() => process.exit(0));
 });

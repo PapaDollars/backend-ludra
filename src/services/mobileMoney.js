@@ -32,20 +32,42 @@ const simulation = {
   },
 };
 
-const PROVIDERS = { simulation };
+const orangeCM = require('./providers/orangeCM');
+
+/**
+ * Fournisseurs réels : `PAYMENT_PROVIDER=orange_cm` n'active Orange que pour l'opérateur `orange_money`
+ * (aucun fournisseur MTN n'est branché : `mtn_momo` ⇒ 503). Un fournisseur réel expose aussi
+ * `getStatus(payment)` (vérification serveur → opérateur) et `extractReference(payload)` (callback).
+ */
+const LIVE = { orange_cm: { provider: orangeCM, operators: ['orange_money'] } };
+
+const unavailable = () => new AppError('Le paiement Mobile Money est momentanément indisponible.', 503, 'PAYMENT_UNAVAILABLE');
 
 const isProduction = () => process.env.NODE_ENV === 'production';
 
-/** Fournisseur actif, ou erreur 503 si aucun n'est utilisable. */
-const getProvider = () => {
+/** Fournisseur actif pour cet opérateur, ou erreur 503 si aucun n'est utilisable. */
+const getProvider = (operator) => {
   const name = process.env.PAYMENT_PROVIDER || (isProduction() ? 'none' : 'simulation');
-  if (name === 'simulation' && isProduction()) {
-    console.error('[paiements] PAYMENT_PROVIDER=simulation refusé en production (droits accordés sans débit).');
-    throw new AppError('Le paiement Mobile Money est momentanément indisponible.', 503, 'PAYMENT_UNAVAILABLE');
+  if (name === 'simulation') {
+    if (isProduction()) {
+      console.error('[paiements] PAYMENT_PROVIDER=simulation refusé en production (droits accordés sans débit).');
+      throw unavailable();
+    }
+    return simulation;
   }
-  const provider = PROVIDERS[name];
-  if (!provider) throw new AppError('Le paiement Mobile Money est momentanément indisponible.', 503, 'PAYMENT_UNAVAILABLE');
-  return provider;
+  const live = LIVE[name];
+  if (!live || !live.operators.includes(operator)) throw unavailable();
+  const missing = live.provider.missingConfig();
+  if (missing.length) {
+    console.error(`[paiements] ${name} : variables d'environnement manquantes : ${missing.join(', ')}`);
+    throw unavailable();
+  }
+  return live.provider;
 };
 
-module.exports = { getProvider, SIMULATION_DELAY_MS };
+/** Fournisseur réel par nom (règlement différé d'un paiement déjà créé), ou null. */
+const getLiveProviderByName = (name) => (LIVE[name] && LIVE[name].provider.missingConfig().length === 0 ? LIVE[name].provider : null);
+
+const LIVE_PROVIDER_NAMES = Object.keys(LIVE);
+
+module.exports = { getProvider, getLiveProviderByName, LIVE_PROVIDER_NAMES, SIMULATION_DELAY_MS };
