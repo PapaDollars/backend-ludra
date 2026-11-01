@@ -2,6 +2,8 @@
 
 API Express + Firestore de LUDRA HOME. Contrat des endpoints attendus par le front : `frontend-ludra/docs/API_CONTRACT_V2.1.md`.
 
+**Pour démarrer sur la V2.1 : lire [`docs/GUIDE_BACKEND_V2.1.md`](docs/GUIDE_BACKEND_V2.1.md)** (fonctionnement du front, liste à cocher, tâches à ne pas oublier).
+
 ## Démarrage
 
 ```bash
