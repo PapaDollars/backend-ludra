@@ -1,8 +1,8 @@
-# LUDRA HOME V2.1 — Guide
+# LUDRA HOME V2.1 — Guide 
 
-Mis à jour le 1er novembre 2026.
+Mis à jour le 1er novembre 2026, d'après la branche `lewis` (commit `6291356`).
 
-Ce guide explique comment fonctionne le front V2.1, ce qui reste à construire et ce qu'il ne faut pas oublier. Il sert de feuille de route. Le détail des champs et des réponses est dans le contrat API.
+Ce guide explique comment fonctionne le front V2.1, ce qui est fait, ce qui reste à construire et ce qu'il ne faut pas oublier. Le détail des champs et des réponses est dans le contrat API.
 
 | Document | Rôle | Emplacement |
 |----------|------|-------------|
@@ -15,18 +15,34 @@ En cas de contradiction : les types priment sur le contrat, et le contrat prime 
 
 ## 1. La situation en bref
 
-LUDRA n'est plus seulement un site d'annonces de logement. C'est maintenant un feed avec **trois univers** : immobilier, personnel (candidats et recruteurs) et services. Le site comprend aussi une messagerie, le déblocage payant du contact, la certification KYC, des abonnements, des avis et un back-office complet.
+LUDRA est maintenant un feed avec **trois univers** : immobilier, personnel (candidats et recruteurs) et services. Le site comprend aussi une messagerie, le déblocage payant du contact, la certification KYC, des abonnements, des avis et un back-office complet.
 
-- **Le front est terminé**, mais il tourne sur des données de démo (mocks), sauf pour l'authentification.
-- **110 endpoints** sont attendus : **19 sont en place**, **91 sont à créer**.
-- **Des traitements ne sont visibles dans aucun appel du front** : webhook de paiement, tâches planifiées, notifications. Voir la [section 6](#6-ce-que-le-front-ne-révèle-pas).
-- **Plusieurs décisions métier restent ouvertes**. Voir la [section 8](#8-décisions-à-prendre-avant-de-coder).
+| État | Endpoints | Détail |
+|------|-----------|--------|
+| ✅ Terminés | **49** | Auth, compte de base, personnel, messagerie, brouillons, abonnements, reçus, preuves, paiements admin |
+| 🟡 Partiels | **7** | La route existe, mais une partie du contrat manque |
+| ⬜ Absents | **54** | Dont tout le cœur immobilier et services |
+| **Total** | **110** | Plus le webhook opérateur, hors décompte |
 
-Pile backend : Express + Firestore (forfait gratuit Spark) + Cloudinary + Brevo, hébergé sur Render. Le front n'a pas de SDK Firebase : **tout passe par cette API**.
+**Le blocage principal : il n'existe pas encore de collection d'annonces.** Sans elle, on ne peut ni publier un bien, ni afficher le feed, ni ouvrir une fiche, ni débloquer un contact. L'accueil du site dépend de `GET /feed`, qui n'existe pas. Les 61 annonces V1 sont toujours dans `properties`, mais aucune route ne les sert.
+
+Le front tourne encore sur ses données de démo, sauf pour l'authentification. Tant que les endpoints absents ne sont pas faits, **ne pas passer `NEXT_PUBLIC_USE_MOCKS=false` en production**.
+
+**Pile backend :** Express + Firestore (forfait gratuit Spark) + Cloudinary + Brevo, hébergé sur Render. Le front n'a pas de SDK Firebase : **tout passe par cette API**.
+
+### État des branches
+
+| Branche | Contenu |
+|---------|---------|
+| `lewis` | Tout le travail décrit ici. **Non fusionnée.** |
+| `main` | Contient seulement une partie du personnel. **Render déploie cette branche : la messagerie, les brouillons et les paiements ne sont pas en production.** |
+| `dev` | Contient une version plus ancienne de ce guide. |
+
+À la fusion, garder **cette version** du guide et du README.
 
 ## 2. Comment le front parle à l'API
 
-**Base.** `NEXT_PUBLIC_API_URL` doit inclure `/api`, par exemple `https://backend-ludra.onrender.com/api`. Aucun préfixe de version : les routes sont `/api/feed`, pas `/api/v2/feed`.
+**Base.** `NEXT_PUBLIC_API_URL` doit inclure `/api`, par exemple `https://backend-ludra.onrender.com/api`. Aucun préfixe de version.
 
 **Enveloppe de réponse.**
 
@@ -35,9 +51,9 @@ Pile backend : Express + Firestore (forfait gratuit Spark) + Cloudinary + Brevo,
 { "success": false, "message": "Texte affiché à l'utilisateur", "code": "OPTIONNEL", "errors": [{ "field": "price", "message": "Indiquez le prix." }] }
 ```
 
-**Le `message` d'erreur est affiché tel quel** : écrivez-le en français, pour l'utilisateur. Quand `errors` est présent, ses messages remplacent `message`.
+**Le `message` d'erreur est affiché tel quel** : écrivez-le en français, pour l'utilisateur. Quand `errors` est présent, ses messages remplacent `message`. Utilisez `AppError`, `notFound` et `validationError` (`src/utils/AppError.js`).
 
-**Listes.** Le format est `{ items, nextCursor, total? }` (`CursorPage<T>`). `nextCursor: null` signifie fin de liste. Le curseur est opaque pour le front.
+**Listes.** Le format est `{ items, nextCursor, total? }`. `nextCursor: null` signifie fin de liste. Le curseur est opaque pour le front.
 
 **Authentification.**
 
@@ -49,19 +65,23 @@ Pile backend : Express + Firestore (forfait gratuit Spark) + Cloudinary + Brevo,
 
 Routes « publiques » : le token est facultatif, mais s'il est présent la réponse est personnalisée (`isFavorite`, `viewerIsOwner`, `viewerAccess`…).
 
-**Appels répétés.** Ces appels déterminent la charge réelle. Ils s'arrêtent quand l'onglet est masqué, sauf le suivi d'un paiement.
+**Appels répétés.** Ils déterminent la charge réelle. Ils s'arrêtent quand l'onglet est masqué, sauf le suivi d'un paiement.
 
 | Quoi | Fréquence | Appels |
 |------|-----------|--------|
 | Conversation ouverte | Toutes les 4 s | `GET /conversations/:id/messages?after=` + `GET /conversations/:id` |
-| Liste des conversations | Toutes les 15 s | `GET /conversations` |
+| Liste des conversations | Toutes les 15 s, y compris quand une conversation est ouverte | `GET /conversations` |
 | Badges du header | Toutes les 30 s et à chaque changement de page | `GET /me/counters` |
 | Dossier KYC en revue | Toutes les 5 s | `GET /kyc` |
 | Paiement en attente | Toutes les 3 s, 2 min maximum | `GET /payments/:id` |
 | Sauvegarde d'un brouillon | ~1,2 s après une modification | `PATCH /drafts/:id` |
 | Compteur de la recherche | 300 ms après un changement de filtre | `GET /search/count` |
 
-## 3. Tester avec le front
+## 3. Tester
+
+**Tests backend :** `npm test` (75 tests, tous au vert au 1er novembre 2026). `tests/helpers/fakeFirestore.js` remplace Firestore en mémoire.
+
+**Avec le front :**
 
 ```bash
 # Dans frontend-ludra/.env.local, puis redémarrer le front
@@ -69,45 +89,164 @@ NEXT_PUBLIC_API_URL=http://localhost:5000/api
 NEXT_PUBLIC_USE_MOCKS=false
 ```
 
-**Attention :** cette bascule est **globale**. À `false`, tous les écrans appellent la vraie API, y compris ceux dont l'endpoint n'existe pas encore.
-
-Pour brancher un seul service, remplacez `withMock(mock, réel)` par l'appel réel dans `src/services/<module>.service.ts`, sur une branche de test. Chaque appel a cette forme :
-
-```ts
-return withMock(
-  () => mockGetFeed(params),                     // données de démo
-  async () => (await api.get('/feed')).data,     // appel réel
-);
+```bash
+# Dans backend-ludra/.env
+PAYMENT_PROVIDER=simulation   # paid après ~6 s ; un numéro finissant par 0000 échoue
 ```
 
-Les fichiers de `src/mocks/` montrent la réponse attendue et les règles simulées. Les données de démo restent dans le `localStorage` du navigateur.
+- **La bascule du front est globale.** À `false`, tous les écrans appellent la vraie API. L'accueil échouera donc tant que `/feed` n'existe pas. Testez directement `/personnel`, `/messages` ou `/publier`.
+- Pour brancher un seul service, remplacez `withMock(mock, réel)` par l'appel réel dans `src/services/<module>.service.ts`, sur une branche de test.
+- `scripts/seed-demo-candidates.js` crée 5 profils de démo. **Ne pas le lancer sur la base de production** : ces profils apparaîtraient dans la recherche.
+
+Les fichiers de `src/mocks/` montrent la réponse attendue et les règles simulées.
 
 ## 4. Pages du front et lots de travail
 
-| Pages du front | Lots |
-|----------------|------|
-| `/`, `/immobilier` | C |
-| `/recherche` | A, C, G |
-| `/annonces/:id` | C, E, H |
-| `/messages`, `/messages/:id` | D |
-| `/publier` | B |
-| `/personnel`, `/personnel/candidats/:id`, `/personnel/abonnements`, `/personnel/forfaits`, `/personnel/shortlist` | C, E, I |
-| `/services`, `/services/:categorie`, `/services/prestataires/:id` | A, C |
-| `/avis/:userId`, `/compte/avis` | H |
-| `/notifications` | Fait |
-| `/compte`, `/compte/parametres` | J |
-| `/compte/annonces` | B |
-| `/compte/favoris` | G |
-| `/compte/paiements`, `/compte/paiements/recu/:id`, `/compte/abonnements` | E |
-| `/compte/certification` | F |
-| `/admin/*` | A, K |
-| `/auth/*`, `/aide`, `/a-propos` | Fait |
+| Pages du front | État | Lots |
+|----------------|------|------|
+| `/`, `/immobilier` | ⬜ | A |
+| `/recherche` | 🟡 Personnel seulement | A, F |
+| `/annonces/:id` | ⬜ | A, B, G |
+| `/messages`, `/messages/:id` | 🟡 Sans images ni badge non lu | A, C |
+| `/publier` | 🟡 Personnel seulement | A |
+| `/personnel`, `/personnel/candidats/:id`, `/personnel/abonnements`, `/personnel/forfaits`, `/personnel/shortlist` | ✅ Favoris exceptés | F |
+| `/services`, `/services/:categorie`, `/services/prestataires/:id` | ⬜ | A |
+| `/avis/:userId`, `/compte/avis` | ⬜ | G |
+| `/notifications` | ✅ | — |
+| `/compte`, `/compte/parametres` | 🟡 Profil seulement | H |
+| `/compte/annonces` | ⬜ | A |
+| `/compte/favoris` | ⬜ | F |
+| `/compte/paiements`, `/compte/paiements/recu/:id`, `/compte/abonnements` | ✅ Hors déblocages | B |
+| `/compte/certification` | ⬜ | E |
+| `/admin/dashboard`, `/admin/utilisateurs`, `/admin/paiements`, `/admin/personnel` | 🟡 Compteurs et file incomplets | I |
+| `/admin/annonces`, `/admin/verifications`, `/admin/signalements`, `/admin/parametres`, `/admin/journal` | ⬜ | I |
+| `/auth/*`, `/aide`, `/a-propos` | ✅ | — |
 
 ## 5. Liste à cocher
 
-L'ordre proposé suit les dépendances : le feed a besoin d'annonces, les avis ont besoin de conversations et de paiements, le back-office a besoin de tout le reste. « Étape N » renvoie à la section du contrat API.
+L'ordre suit les dépendances : d'abord les annonces, dont presque tout dépend. « Étape N » renvoie à la section du contrat API.
 
-### Socle — fait (19)
+### Priorité 0 — Avant toute mise en production
+
+Voir la [section 7](#7-à-corriger-dans-le-code-existant). Fusionner `lewis`, corriger les limites de requêtes et réduire le coût de la messagerie.
+
+### Lot A — Annonces, prestataires et feed (12 + 4 partiels) · étapes 1, 2, 3, 5, 9, 10
+
+Définir d'abord les collections d'annonces et de prestataires, puis migrer les 61 `properties` ([section 9](#9-données-v1-à-reprendre)).
+
+- [ ] `POST /drafts/:id/publish` — **Partiel :** `personnel` seulement ; `immobilier` et `services` répondent `501`. Manquent aussi `pending_kyc`, `pending_review` et `sourceItemId`.
+- [ ] `GET /search` — **Partiel :** `personnel` seulement ; `immobilier` et `services` répondent `501`.
+- [ ] `GET /search/count` — **Partiel :** mêmes limites.
+- [ ] `POST /conversations/open` — **Partiel :** `itemId` n'accepte qu'un profil candidat. Une annonce ou un prestataire répond `404`.
+- [ ] `GET /listings/:id` (jamais de téléphone avant paiement)
+- [ ] `GET /services/providers/:id`
+- [ ] `GET /services/categories`
+- [ ] `GET /feed`
+- [ ] `GET /feed/suggested-accounts`
+- [ ] `GET /me/items`
+- [ ] `PATCH /me/items/:id/status`
+- [ ] `POST /me/items/:id/edit`
+- [ ] `POST /saved/toggle`
+- [ ] `GET /admin/settings`
+- [ ] `PUT /admin/settings` (journalisé ; appeler `invalidateSettings()`)
+- [ ] `GET /me/counters` (appelé par le header ; `unreadMessages` et `unreadNotifications`)
+
+### Lot B — Déblocage du contact (2 + 1 partiel) · étapes 3, 10
+
+Le mécanisme de paiement existe déjà. Il reste à y ajouter l'objet `unlock_contact`.
+
+- [ ] `POST /payments/unlock-contact` (header `Idempotency-Key`, pas de double débit)
+- [ ] `GET /listings/:id/contact` (`402` si non payé)
+- [ ] `GET /me/unlocks` — **Partiel :** répond toujours `[]`.
+
+### Lot C — Messagerie (1 partiel) · étape 4
+
+- [ ] `POST /conversations/:id/messages` — **Partiel :** texte uniquement ; une image répond `501`, alors que l'écran permet d'en joindre.
+- [x] `GET /conversations`
+- [x] `GET /conversations/:id`
+- [x] `GET /conversations/:id/messages`
+- [x] `POST /conversations/:id/read`
+- [x] `POST /conversations/:id/block`
+- [x] `DELETE /conversations/:id/block`
+
+### Lot D — Publication et brouillons · étape 5
+
+- [x] `GET /drafts`
+- [x] `POST /drafts`
+- [x] `GET /drafts/:id`
+- [x] `PATCH /drafts/:id`
+- [x] `DELETE /drafts/:id`
+- [x] `POST /uploads`
+
+### Lot E — Certification KYC (6) · étape 6
+
+- [ ] `GET /kyc`
+- [ ] `PUT /kyc/profile`
+- [ ] `POST /kyc/documents` (stockage privé, PDF accepté, jamais d'URL renvoyée)
+- [ ] `DELETE /kyc/documents/:id`
+- [ ] `PUT /kyc/locations`
+- [ ] `POST /kyc/submit`
+
+### Lot F — Favoris et recherches sauvegardées (10) · étapes 2, 10
+
+`isFavorite` est toujours `false` tant que ce lot n'est pas fait. Il doit devenir exact partout : feed, recherche, fiches.
+
+- [ ] `GET /saved`
+- [ ] `PATCH /saved/:itemId`
+- [ ] `GET /saved/collections`
+- [ ] `POST /saved/collections`
+- [ ] `PATCH /saved/collections/:id`
+- [ ] `DELETE /saved/collections/:id`
+- [ ] `GET /saved-searches`
+- [ ] `POST /saved-searches`
+- [ ] `PATCH /saved-searches/:id`
+- [ ] `DELETE /saved-searches/:id`
+
+### Lot G — Avis et signalements (7) · étapes 3, 7
+
+- [ ] `GET /users/:userId/reviews`
+- [ ] `GET /me/reviews/received`
+- [ ] `GET /reviews/eligibility`
+- [ ] `POST /reviews`
+- [ ] `PATCH /reviews/:id`
+- [ ] `POST /reviews/:id/reply`
+- [ ] `POST /reports`
+
+### Lot H — Mon compte (5) · étape 10
+
+- [ ] `GET /me/overview`
+- [ ] `GET /me/preferences`
+- [ ] `PUT /me/preferences`
+- [ ] `POST /me/password`
+- [ ] `POST /me/logout-all`
+
+### Lot I — Back-office (12 + 1 partiel) · étape 11
+
+Chaque décision écrit une entrée d'audit avec `createAuditEntry`. Un motif d'au moins 5 caractères est obligatoire pour toute décision négative (sinon `422`).
+
+- [ ] `GET /admin/stats` — **Partiel :** `pendingKyc`, `pendingListings` et `openReports` valent toujours 0.
+- [ ] `GET /admin/queue`
+- [ ] `GET /admin/kyc`
+- [ ] `GET /admin/kyc/:userId`
+- [ ] `GET /admin/kyc/:userId/documents/:docId/view` (URL signée, 5 min maximum, consultation journalisée)
+- [ ] `POST /admin/kyc/:userId/decision`
+- [ ] `GET /admin/listings`
+- [ ] `POST /admin/listings/:id/decision`
+- [ ] `GET /admin/reviews`
+- [ ] `POST /admin/reviews/:id/decision`
+- [ ] `GET /admin/reports`
+- [ ] `POST /admin/reports/:id/decision`
+- [ ] `GET /admin/audit`
+- [x] `GET /admin/users`
+- [x] `PATCH /admin/users/:id`
+- [x] `GET /admin/proofs`
+- [x] `POST /admin/proofs/:id/decision`
+- [x] `GET /admin/payments`
+- [x] `POST /admin/payments/:id/reconcile`
+
+### Terminé (reste du périmètre)
+
+**Auth et compte de base**
 
 - [x] `POST /auth/send-code`
 - [x] `POST /auth/register`
@@ -125,232 +264,129 @@ L'ordre proposé suit les dépendances : le feed a besoin d'annonces, les avis o
 - [x] `GET /notifications`
 - [x] `POST /notifications/:id/read`
 - [x] `POST /notifications/read-all`
-- [x] `GET /admin/stats` (compteurs partiels, voir [section 7](#7-à-corriger-dans-le-backend-existant))
-- [x] `GET /admin/users`
-- [x] `PATCH /admin/users/:id`
 
-### Lot A — Référentiels et paramètres (5) · étapes 2, 6, 9, 11
+**Référentiels**
 
-À faire en premier : prix, villes, métiers et catégories ne sont pas codés en dur dans le front.
+- [x] `GET /search/options` (liste fixe dans `config/referentials.js`, à rendre administrable)
+- [x] `GET /search/suggestions`
+- [x] `GET /plans`
 
-- [ ] `GET /search/options`
-- [ ] `GET /plans` (9 plans, à créer à l'identique : `src/mocks/subscription.mock.ts`)
-- [ ] `GET /services/categories`
-- [ ] `GET /admin/settings`
-- [ ] `PUT /admin/settings` (journalisé ; effet immédiat sur les prix et les catégories)
+**Personnel**
 
-### Lot B — Publication (10) · étapes 5, 10
+- [x] `GET /candidates/:id`
+- [x] `GET /me/candidate-profile`
+- [x] `GET /recruiter/access`
+- [x] `GET /recruiter/shortlist`
+- [x] `POST /recruiter/shortlist`
+- [x] `DELETE /recruiter/shortlist/:candidateId`
+- [x] `GET /recruiter/shortlist/export`
 
-- [ ] `GET /drafts`
-- [ ] `POST /drafts`
-- [ ] `GET /drafts/:id`
-- [ ] `PATCH /drafts/:id` (aucune validation bloquante)
-- [ ] `DELETE /drafts/:id`
-- [ ] `POST /drafts/:id/publish` (validation complète ; `sourceItemId` met à jour la publication existante)
-- [ ] `POST /uploads`
-- [ ] `GET /me/items`
-- [ ] `PATCH /me/items/:id/status`
-- [ ] `POST /me/items/:id/edit`
+**Paiements et abonnements**
 
-### Lot C — Feed, recherche et fiches (10) · étapes 1, 2, 3, 8, 9
-
-- [ ] `GET /feed`
-- [ ] `GET /feed/suggested-accounts`
-- [ ] `GET /me/counters`
-- [ ] `GET /search` (`total` obligatoire ; inclut `universe=personnel` et `universe=services`)
-- [ ] `GET /search/count`
-- [ ] `GET /search/suggestions`
-- [ ] `GET /listings/:id` (jamais de téléphone avant paiement)
-- [ ] `GET /candidates/:id`
-- [ ] `GET /services/providers/:id`
-- [ ] `POST /saved/toggle`
-
-### Lot D — Messagerie (8) · étape 4
-
-- [ ] `GET /conversations`
-- [ ] `POST /conversations/open`
-- [ ] `GET /conversations/:id`
-- [ ] `GET /conversations/:id/messages` (paramètres `before` et `after`)
-- [ ] `POST /conversations/:id/messages` (multipart ; masquer coordonnées et liens)
-- [ ] `POST /conversations/:id/read`
-- [ ] `POST /conversations/:id/block`
-- [ ] `DELETE /conversations/:id/block`
-
-### Lot E — Paiements et abonnements (8) · étapes 3, 6, 10
-
-- [ ] `POST /payments/unlock-contact` (header `Idempotency-Key`, pas de double débit)
-- [ ] `POST /payments/subscription` (header `Idempotency-Key`)
-- [ ] `GET /payments/:id`
-- [ ] `GET /listings/:id/contact` (`402` si non payé)
-- [ ] `GET /subscriptions/me`
-- [ ] `GET /me/payments`
-- [ ] `GET /me/payments/:id`
-- [ ] `GET /me/unlocks`
-- [ ] Webhook de l'opérateur (hors décompte, voir [section 6](#6-ce-que-le-front-ne-révèle-pas))
-
-### Lot F — Certification KYC (6) · étape 6
-
-- [ ] `GET /kyc`
-- [ ] `PUT /kyc/profile`
-- [ ] `POST /kyc/documents` (stockage privé, jamais d'URL renvoyée)
-- [ ] `DELETE /kyc/documents/:id`
-- [ ] `PUT /kyc/locations`
-- [ ] `POST /kyc/submit`
-
-### Lot G — Favoris et recherches sauvegardées (10) · étapes 2, 10
-
-- [ ] `GET /saved`
-- [ ] `PATCH /saved/:itemId`
-- [ ] `GET /saved/collections`
-- [ ] `POST /saved/collections`
-- [ ] `PATCH /saved/collections/:id`
-- [ ] `DELETE /saved/collections/:id`
-- [ ] `GET /saved-searches`
-- [ ] `POST /saved-searches`
-- [ ] `PATCH /saved-searches/:id`
-- [ ] `DELETE /saved-searches/:id`
-
-### Lot H — Avis et signalements (7) · étapes 3, 7
-
-- [ ] `GET /users/:userId/reviews`
-- [ ] `GET /me/reviews/received`
-- [ ] `GET /reviews/eligibility`
-- [ ] `POST /reviews`
-- [ ] `PATCH /reviews/:id`
-- [ ] `POST /reviews/:id/reply`
-- [ ] `POST /reports`
-
-### Lot I — Personnel, côté recruteur et candidat (6) · étape 8
-
-- [ ] `GET /me/candidate-profile`
-- [ ] `GET /recruiter/access`
-- [ ] `GET /recruiter/shortlist`
-- [ ] `POST /recruiter/shortlist`
-- [ ] `DELETE /recruiter/shortlist/:candidateId`
-- [ ] `GET /recruiter/shortlist/export` (fichier CSV, aucune coordonnée)
-
-### Lot J — Mon compte (5) · étape 10
-
-- [ ] `GET /me/overview`
-- [ ] `GET /me/preferences`
-- [ ] `PUT /me/preferences`
-- [ ] `POST /me/password`
-- [ ] `POST /me/logout-all`
-
-### Lot K — Back-office (16) · étape 11
-
-Chaque décision écrit une entrée d'audit avec `createAuditEntry`. Un motif d'au moins 5 caractères est obligatoire pour toute décision négative (sinon `422`).
-
-- [ ] `GET /admin/queue`
-- [ ] `GET /admin/kyc`
-- [ ] `GET /admin/kyc/:userId`
-- [ ] `GET /admin/kyc/:userId/documents/:docId/view` (URL signée, 5 min maximum, consultation journalisée)
-- [ ] `POST /admin/kyc/:userId/decision`
-- [ ] `GET /admin/listings`
-- [ ] `POST /admin/listings/:id/decision`
-- [ ] `GET /admin/reviews`
-- [ ] `POST /admin/reviews/:id/decision`
-- [ ] `GET /admin/reports`
-- [ ] `POST /admin/reports/:id/decision`
-- [ ] `GET /admin/payments`
-- [ ] `POST /admin/payments/:id/reconcile`
-- [ ] `GET /admin/proofs`
-- [ ] `POST /admin/proofs/:id/decision`
-- [ ] `GET /admin/audit`
+- [x] `POST /payments/subscription`
+- [x] `GET /payments/:id`
+- [x] `GET /subscriptions/me`
+- [x] `GET /me/payments`
+- [x] `GET /me/payments/:id`
 
 ## 6. Ce que le front ne révèle pas
 
 Ces traitements n'apparaissent dans aucun appel du front. Le site peut sembler complet alors qu'ils manquent.
 
-### Webhook Mobile Money
+### Paiements réels
 
-Le contrat ne définit pas cette route, car c'est l'opérateur qui l'appelle.
-
-- Vérifier la signature de chaque appel.
-- Un paiement ne passe à `paid` **que** par ce webhook. Le retour de la demande de paiement ne suffit jamais.
-- Traiter sans effet un webhook reçu deux fois.
-- Après `paid`, selon le paiement : débloquer le contact ou activer l'abonnement, créer le numéro de reçu séquentiel, notifier l'utilisateur.
-- Sur échec ou expiration : renseigner `failureReason`.
-- Le serveur doit rester joignable en permanence : l'offre gratuite de Render se met en veille.
+| Sujet | État |
+|-------|------|
+| Simulation | Fonctionne hors production. Refusée en production. |
+| Production | Sans `PAYMENT_PROVIDER` valide, tout paiement répond `503 PAYMENT_UNAVAILABLE`. |
+| Orange Money | Écrit dans `services/providers/orangeCM.js` **à partir de clients communautaires, pas de la documentation d'Orange**. Chemins, statuts, format des numéros et callback sont à valider. **Ne pas activer avec de vrais débits avant cette validation.** |
+| MTN MoMo | **Aucun fournisseur branché** : `mtn_momo` répond `503`, alors que le front propose cet opérateur. |
+| Webhook | `POST /payments/webhooks/orange/:secret`. Le callback sert seulement de déclencheur : le résultat vient toujours d'une vérification auprès d'Orange. Une seule règle à garder : `paid` ne vient jamais du contenu d'un callback non vérifié. |
 
 ### Tâches planifiées
 
-| Tâche | Effet attendu |
-|-------|---------------|
-| Suppression de compte | Supprimer les comptes dont `deletionScheduledAt` est dépassé. **Le site promet 72 h et aucun code ne le fait aujourd'hui.** Conserver les reçus (obligation légale). |
-| Expiration des abonnements | Passer à `expired`, retirer les droits recruteur et le bonus de classement, remettre le plan candidat à gratuit. |
-| Rappel d'expiration | Notification `subscription` avant l'échéance d'un plan. |
-| Expiration KYC | Passer à `expire`, retirer le badge, mettre à jour `kycStatus`. |
-| Paiements sans réponse | Passer à `expired` les paiements `pending` trop anciens. |
-| Alertes de recherche | Calculer `newResults`, notifier si `alertEnabled`. |
-| Rétention des conversations | Purger selon la politique retenue (à définir). |
+| Tâche | État | À faire |
+|-------|------|---------|
+| Suppression de compte | ⬜ | **Le site promet 72 h, et aucun code ne le fait.** Supprimer les comptes dont `deletionScheduledAt` est dépassé, en conservant les reçus (obligation légale). |
+| Expiration des abonnements | ✅ | Calculée à la lecture : droits recruteur et plan candidat redeviennent inactifs sans tâche planifiée. |
+| Rappel d'expiration | ⬜ | Notification `subscription` avant l'échéance. |
+| Paiements sans réponse | 🟡 | Expirés à la lecture après 15 min. Le réconciliateur tourne seulement avec un fournisseur réel et s'arrête si l'instance dort. |
+| Expiration KYC | ⬜ | Passer à `expire`, retirer le badge, mettre à jour `kycStatus`. |
+| Alertes de recherche | ⬜ | Calculer `newResults`, notifier si `alertEnabled`. |
+| Rétention des conversations | ⬜ | Politique à définir. |
 
-Un `setInterval` dans le serveur n'est pas fiable si Render met l'instance en veille. Prévoyez un déclencheur externe qui appelle une route protégée par un secret.
+Un `setInterval` dans le serveur n'est pas fiable si Render met l'instance en veille (offre gratuite). Prévoyez un déclencheur externe qui appelle une route protégée par un secret, ou une instance toujours active.
 
 ### Effets de bord par événement
 
-| Événement | À faire côté serveur |
-|-----------|----------------------|
-| Nouveau message | Incrémenter `unreadMessages`, notifier selon les préférences |
-| Avis reçu ou réponse | Notification `review` ; recalculer `publisher.rating` et `publisher.reviewsCount` |
-| Décision KYC | Notification `kyc` avec motif ; mettre à jour `users.kycStatus` et `publisher.verified` ; appeler `invalidateUser(id)` |
-| Décision de modération | Notification `listing` avec motif ; audit ; annonce retirée du feed, de la recherche et des fiches si elle n'est plus `active` |
-| `suspend_user` | Compte désactivé ; audit ; `invalidateUser(id)` |
-| Paramètre modifié | Vider les caches ; effet immédiat sur `/plans`, `/search/options`, `/services/categories`, le prix du contact et le classement |
-| Publication | Attribuer le profil propriétaire ou agent ; `pending_kyc` si la certification est requise |
-| Consultation, contact, favori | Alimenter `MyItem.stats` (`views`, `contacts`, `favorites`), en limitant les écritures |
+| Événement | État | À faire côté serveur |
+|-----------|------|----------------------|
+| Nouveau message | 🟡 | Notification créée. Reste : `unreadMessages` dans `/me/counters` et les préférences. |
+| Paiement confirmé ou échoué | ✅ | Reçu séquentiel et notification. Adapter le titre pour `unlock_contact` (« activé » concerne les abonnements). |
+| Abonnement activé | ✅ | Même transaction que le paiement ; plan candidat mis à jour. |
+| Décision sur preuve | ✅ | Badge, audit, notification. |
+| Décision KYC | ⬜ | Notification avec motif ; `users.kycStatus` ; `invalidateUser(id)` ; **recopier le badge dans `candidates.publisher.verified` et `conversations.people`**, qui sont aujourd'hui figés. |
+| Changement de nom ou d'avatar | ⬜ | Même problème : ces champs recopiés ne sont jamais mis à jour. |
+| Avis reçu ou réponse | ⬜ | Notification `review` ; recalculer `publisher.rating` et `publisher.reviewsCount`. |
+| Décision de modération | ⬜ | Notification avec motif ; audit ; retirer du feed, de la recherche et des fiches ce qui n'est plus `active`. |
+| `suspend_user` | ⬜ | Compte désactivé ; audit ; `invalidateUser(id)` ; masquer ses publications. |
+| Paramètre modifié | ⬜ | Vider les caches ; effet immédiat sur les prix, les catégories et le classement. |
+| Publication immobilière | ⬜ | Attribuer le profil propriétaire ou agent ; `pending_kyc` si la certification est requise. |
+| Consultation, contact, favori | ⬜ | Alimenter `MyItem.stats`, en limitant les écritures. |
 
-Les notifications respectent `NotificationPreferences` : `newMessages`, `searchAlerts`, `reviews`, `payments`, `marketing`, et les canaux `email`, `sms`, `push`. `createNotification` existe déjà. Les liens `href` sont des chemins internes du front.
+**Préférences de notification :** `createNotification` ne les consulte pas encore. Il faudra respecter `newMessages`, `searchAlerts`, `reviews`, `payments`, `marketing` et les canaux `email`, `sms`, `push`.
 
-### Règles serveur que le front ne peut pas garantir
+### Règles serveur à conserver
 
-- Masquer téléphones, e-mails et liens dans les messages, les annonces, les profils et les avis. L'alerte du front est une simple aide.
+Déjà appliquées pour le personnel et la messagerie, à reproduire pour les annonces, les services et les avis :
+
+- Masquer téléphones, e-mails et liens (`maskContacts`, `moderateMessage` dans `utils/text.js`).
 - Revalider toutes les règles de publication (miroir de `src/views/publish/schemas.ts`) et les pièces KYC (`src/lib/kycRequirements.ts`).
 - Calculer les permissions côté serveur : le front masque, le serveur refuse.
-- Appliquer le classement §11 : plan payant = bonus borné, 60 % minimum de résultats organiques par défaut (`organicQuotaPercent`), bonus de 20 % au plus (`maxPlanBoostPercent`), `sponsored: true` sur toute mise en avant.
-- Ne jamais exclure un candidat gratuit, et ignorer tout effet des plans avec `sort=pertinence_pure`.
-- Refuser `POST /conversations/open` vers un candidat sans droit `contact` (`403 PLAN_REQUIRED`), sauf si le candidat a engagé l'échange.
-- Limiter le débit de l'envoi de messages (`429`).
+- Appliquer le classement §11 : plan payant = bonus borné, 60 % minimum de résultats organiques par défaut, bonus de 20 % au plus, `sponsored: true` sur toute mise en avant.
 
-## 7. À corriger dans le backend existant
+## 7. À corriger dans le code existant
 
 | Priorité | Sujet | Constat | Action |
 |----------|-------|---------|--------|
-| **Haute** | Adresse IP derrière Render | `trust proxy` n'est pas configuré dans `src/app.js`. Les limites de débit risquent de compter tous les visiteurs ensemble. Non vérifié en production. | Ajouter `app.set('trust proxy', 1)` après vérification, puis tester. |
-| **Haute** | Limite globale | 200 requêtes par 15 min. Une conversation ouverte génère environ 30 appels par minute : **la limite est atteinte en 7 minutes environ, pour un seul utilisateur**. | Augmenter la limite pour un utilisateur connecté, ou exclure les routes de polling. |
-| **Haute** | Limite de connexion | 20 tentatives par 15 min. Toutes les connexions passent par Vercel, donc la même IP peut servir pour tous les utilisateurs. | Compter par compte (email ou téléphone) plutôt que par IP. |
-| **Haute** | Fichiers envoyés | `middleware/upload.js` accepte images uniquement, 5 Mo maximum. Le contrat demande 10 Mo pour `/uploads` et 10 Mo avec PDF pour le KYC. | Créer des règles par usage. |
-| **Haute** | Documents KYC | Ils ne doivent jamais être publics. L'envoi actuel vers Cloudinary est prévu pour des images publiques. | Choisir un stockage privé avec URL signée. |
-| Moyenne | Statistiques admin | `GET /admin/stats` renvoie 0 pour `pendingKyc`, `pendingListings`, `openReports`, `pendingProofs`, `paymentsToday`, `paymentsTodayCount`, `failedPayments24h`. | Brancher avec `count()` quand les collections existent. |
-| Moyenne | Statut KYC | `GET /admin/users` lit `users.kycStatus`, que rien ne met à jour. | Le mettre à jour à chaque décision KYC. |
-| Moyenne | Index Firestore | `firestore.indexes.json` doit être déployé. Sinon `GET /notifications` lit tout (avertissement dans les logs). | `firebase deploy --only firestore:indexes` et vérifier les logs. |
+| **Bloquant** | Déploiement | `lewis` n'est pas fusionnée. | Fusionner vers `main`, déployer `firestore.indexes.json` (**10 index**), configurer les nouvelles variables de `.env.example`. |
+| **Haute** | Adresse IP derrière Render | `trust proxy` est toujours absent de `src/app.js`. Les limites de débit par IP, y compris les nouvelles, risquent de compter tous les visiteurs ensemble. Non vérifié en production. | Ajouter `app.set('trust proxy', 1)` après vérification, puis tester. |
+| **Haute** | Limite globale | 200 requêtes par 15 min. Une conversation ouverte génère environ 30 appels par minute, plus la liste : **la limite est atteinte en moins de 7 minutes, pour un seul utilisateur**. | Augmenter la limite pour un utilisateur connecté, ou exclure les routes de polling. |
+| **Haute** | Limite de connexion | 20 tentatives par 15 min. Toutes les connexions passent par Vercel, donc la même IP peut servir pour tous. | Compter par compte plutôt que par IP. |
+| **Haute** | Coût de la messagerie | Calcul d'après le code : 3 lectures toutes les 4 s pour une conversation, jusqu'à 21 toutes les 15 s pour la liste. **Soit jusqu'à 7 700 lectures par heure pour un seul utilisateur**, sur un quota de 50 000 par jour. | Cache court sur les conversations, liste moins fréquente ou réponse « rien de nouveau ». |
+| **Haute** | Accès à un candidat | `POST /conversations/open` applique `PLAN_REQUIRED` selon le **destinataire**, pas l'objet. Testé : un utilisateur sans forfait est refusé s'il écrit à une personne qui a un profil candidat, même sans objet. Une personne avec un profil candidat **et** une annonce ne serait donc plus contactable. | Baser la règle sur l'objet de la conversation. |
+| Moyenne | Coût de la recherche | `findActiveCandidates` lit tous les profils correspondants, puis trie en mémoire (cache 60 s). Correct pour quelques centaines de profils. | Prévoir une pagination réelle avant que le volume monte ; ne pas recopier ce modèle pour les annonces. |
+| Moyenne | Documents KYC | L'envoi actuel vers Cloudinary est prévu pour des images publiques, sans PDF. | Choisir un stockage privé avec URL signée. |
+| Moyenne | Statut KYC | `users.kycStatus` est lu partout, mais rien ne l'écrit. | Le mettre à jour à chaque décision KYC. |
 | Moyenne | Emails | Inscription et mot de passe oublié dépendent d'une clé Brevo active, d'un expéditeur validé et, si le blocage d'IP est activé, d'une IP autorisée. | Vérifier en production. |
+| Basse | Images orphelines | Un upload non publié reste dans `uploads` et sur Cloudinary. | Nettoyage périodique. |
 
-## 8. Décisions à prendre avant de coder
+## 8. Décisions à prendre
 
 À trancher avec le responsable du front ou le métier.
 
 **Données affichées mais qu'aucun écran ne permet de saisir :**
 
-| Sujet | Problème | Question |
-|-------|----------|----------|
-| Preuves « Formé » et habilitations | Le back-office valide des preuves (`/admin/proofs`), mais **aucun écran ni endpoint ne permet à un utilisateur d'en envoyer**. | Quel parcours d'envoi créer ? Il faudra un écran et un endpoint. |
-| Permis et références du candidat | `license` et `references` sont affichés sur le profil, mais absents du formulaire de publication. | Les ajouter au formulaire ou les retirer ? |
-| Zones et profession réglementée | `zones` et `regulatedProfession` sont affichés sur la fiche prestataire, mais absents du formulaire. | Les ajouter au formulaire ou les renseigner à la validation admin ? |
-| Visites | Un avis peut venir d'une interaction `visit`, mais **aucun écran ne crée de visite** (les routes V1 ont été supprimées). | Retirer ce type ou recréer la fonctionnalité ? |
-| `newResults` | Le badge « +N » dépend de la dernière consultation, mais aucun appel ne signale cette consultation. | Faut-il une route dédiée ? |
+| Sujet | État | Question |
+|-------|------|----------|
+| Preuves « Formé » | Une preuve est créée depuis le texte `training`, **sans pièce jointe**. L'admin valide donc sur simple déclaration. | Faut-il un envoi de justificatif ? Il faudra un écran et un endpoint. |
+| Habilitations | **Rien ne crée de preuve `habilitation`**, et le badge `regulatedVerified` ne peut pas s'activer. | Quel parcours d'envoi ? À traiter avec les prestataires. |
+| Permis et références du candidat | `license` et `references` sont stockés et affichés, mais absents du formulaire. Seul le script de démo les remplit. | Les ajouter au formulaire ou les retirer ? |
+| Zones et profession réglementée | `zones` et `regulatedProfession` sont affichés sur la fiche prestataire, mais absents du formulaire. | Les ajouter ou les renseigner à la validation admin ? |
+| Visites | Un avis peut venir d'une interaction `visit`, mais **aucun écran ne crée de visite**. | Retirer ce type ou recréer la fonctionnalité ? |
+| `newResults` | Le badge « +N » dépend de la dernière consultation, mais aucun appel ne la signale. | Faut-il une route dédiée ? |
 
 **Choix métier et techniques :**
 
-- Quel opérateur ou agrégateur Mobile Money utiliser (MTN MoMo, Orange Money) ?
-- Quelle durée pour les plans candidats et recruteurs ? 30 jours par défaut, à confirmer.
-- Quel prorata si un abonné change de plan ?
-- Quelle règle exacte pour `badgeActive` ? Exemple du contrat : `verifie` + abonnement actif.
-- Quelle politique de rétention des conversations ?
-- Quels canaux réels ? Seul l'email existe aujourd'hui (Brevo) ; SMS et push n'ont pas de fournisseur.
-- Comment calculer `participantOnline` sans écrire dans Firestore à chaque requête ?
-- Comment acheter une mise en avant ? Le contrat prévoit `sponsor` et `unsponsor` côté admin, sans parcours d'achat.
-- Comment représenter propriétaire et agent ? `users.role` vaut toujours `user | landlord | admin | proprietaire`, alors que `publisher.kind` vaut `owner | agent | candidate | recruiter | provider | user`. Un champ séparé est à prévoir.
+- Quel fournisseur pour MTN MoMo ? Et Orange : API directe validée, ou agrégateur couvrant les deux opérateurs ?
+- Durée des plans candidats et recruteurs : 30 jours codés par défaut, à confirmer.
+- Changement de plan : le code prolonge si le plan est identique, et **remplace immédiatement sans prorata** sinon. Le temps restant est perdu. À confirmer.
+- Badge public : le contrat donne en exemple `verifie` + abonnement actif, le code des candidats utilise seulement `kycStatus === 'verifie'`. Quelle règle exacte ?
+- Politique de rétention des conversations ?
+- Canaux réels : seul l'email existe (Brevo). SMS et push n'ont pas de fournisseur.
+- Présence en ligne : `participantOnline` vaut toujours `false`. Comment la calculer sans écrire dans Firestore à chaque requête ?
+- Mise en avant : le contrat prévoit `sponsor` et `unsponsor` côté admin, sans parcours d'achat.
+- Propriétaire et agent : `users.role` vaut `user | landlord | admin | proprietaire`, alors que `publisher.kind` vaut `owner | agent | candidate | recruiter | provider | user`. Un champ séparé est à prévoir.
 
 ## 9. Données V1 à reprendre
 
@@ -364,6 +400,8 @@ Les notifications respectent `NotificationPreferences` : `newMessages`, `searchA
 | `properties` | **À migrer** vers la future collection d'annonces. |
 | `contacts`, `visits` | À migrer ou archiver selon les décisions de la section 8. |
 | `codes_verification`, `general_contacts` | Conserver. |
+
+Collections créées par `lewis` : `candidates`, `drafts`, `uploads`, `conversations` (avec `messages`), `shortlists`, `subscriptions`, `payments`, `proofs`, `counters`, `locks`, `settings`.
 
 Correspondance proposée pour `properties`, à valider :
 
@@ -384,17 +422,17 @@ Correspondance proposée pour `properties`, à valider :
 
 **Sécurité et confidentialité**
 
-- Aucun téléphone ni WhatsApp avant un `unlock_contact` confirmé par webhook.
+- Aucun téléphone ni WhatsApp avant un `unlock_contact` confirmé.
 - Aucun document KYC dans une réponse publique : uniquement des statuts.
 - Sur un candidat : jamais de téléphone, e-mail, adresse, âge, situation familiale, religion, ethnie ou santé.
-- Une route `/admin/*` exige un rôle admin **et** la bonne permission : les 11 permissions sont listées dans `src/lib/adminPermissions.ts`.
+- Une route `/admin/*` exige un rôle admin **et** la bonne permission : les 11 permissions sont listées dans `src/lib/adminPermissions.ts` (dépôt front).
 - Aucune donnée d'un utilisateur ne doit apparaître pour un autre.
 
 **Quota Firestore.** Le forfait Spark autorise 50 000 lectures et 20 000 écritures par jour. Un dépassement bloque l'application jusqu'à minuit, heure du Pacifique.
 
-- Filtrer avec `where`, paginer avec `limit` et `startAfter`. Ne jamais lire une collection entière pour la filtrer en JavaScript, et ne pas utiliser `offset()`.
+- Filtrer avec `where`, paginer avec `limit` et `startAfter`. Ne pas utiliser `offset()`.
 - Compter avec `count()`.
-- Éviter les requêtes en boucle : utiliser `db.getAll()` ou recopier les champs affichés.
+- Éviter les requêtes en boucle : utiliser `db.getAll()` ou recopier les champs affichés, **en prévoyant leur mise à jour**.
 - Mettre en cache ce qui change rarement, et vider le cache dans chaque route d'écriture.
 - Écrire au plus une vue par visiteur, par objet et par jour.
 - Ne pas relire `users/{id}` : `req.user` est déjà chargé.
@@ -404,10 +442,15 @@ Correspondance proposée pour `properties`, à valider :
 
 | Fichier | Usage |
 |---------|-------|
-| `src/utils/pagination.js` | `cursorPage(liste, cursor, limit)` pour une liste déjà en mémoire |
+| `src/utils/AppError.js` | `AppError`, `notFound`, `validationError` |
+| `src/utils/pagination.js` | `cursorPage`, `encodeCursor`, `decodeCursor` |
 | `src/utils/audit.js` | `createAuditEntry(req.user, { action, targetType, targetId, targetLabel, reason, changes })` |
 | `src/utils/notifications.js` | `createNotification`, `notifierTousLesAdmins` |
 | `src/utils/userCache.js` | `getUser`, `getAllUsers`, `invalidateUser` |
+| `src/utils/text.js` | `maskContacts`, `moderateMessage`, `normalize`, `tokenize` |
+| `src/utils/ttlCache.js` | Cache mémoire avec durée de vie |
+| `src/services/settings.service.js` | `getSettings`, `findPlan`, `invalidateSettings` |
+| `src/services/payments.service.js` | Cycle complet des paiements (`settlePayment`, idempotence) |
 | `src/middleware/role.js` | `requireRole`, `requirePermission` |
 | `src/middleware/auth.js` | `authenticate`, `optionalAuth` |
 
@@ -419,7 +462,20 @@ Correspondance proposée pour `properties`, à valider :
 - [ ] Aucune donnée privée n'est renvoyée.
 - [ ] La lecture est paginée, sans collection lue en entier, et les index nécessaires sont déclarés dans `firestore.indexes.json`.
 - [ ] Les notifications, l'audit et l'invalidation des caches sont en place.
+- [ ] Des tests couvrent les règles métier (`npm test`).
 - [ ] L'écran correspondant fonctionne avec le front, sans le mock.
 - [ ] La case est cochée dans ce guide.
 
-Quand les 91 endpoints et la section 6 sont faits, on passe `NEXT_PUBLIC_USE_MOCKS=false` en production et on vérifie chaque page de la section 4.
+Quand tous les endpoints et la section 6 sont faits, on passe `NEXT_PUBLIC_USE_MOCKS=false` en production et on vérifie chaque page de la section 4.
+
+## 12. Vérifications faites le 1er novembre 2026
+
+| Vérification | Résultat |
+|--------------|----------|
+| `npm test` sur `lewis` | 75 tests sur 75 réussis |
+| Routes montées, comparées aux 110 appels du front | 56 présentes, 54 absentes, plus le webhook |
+| Parcours HTTP sur base simulée : brouillon, upload, publication, recherche, fiche, souscription, shortlist, export, conversation, blocage, preuve, paiements admin | Fonctionnent |
+| 28 réponses réelles contrôlées par `tsc` avec les types du front | Conformes |
+| Coordonnées dans les réponses publiques et masquage des textes | Aucune fuite constatée |
+
+**Non vérifié :** vraie base Firestore, index déployés, vrais écrans du front branchés sur cette API, API Orange réelle, comportement réel des limites de débit derrière Render.
