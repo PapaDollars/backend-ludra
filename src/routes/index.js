@@ -10,4 +10,19 @@ router.use('/contacts', require('./contacts.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/notifications', require('./notifications.routes'));
 
+// Placement du personnel (modules 10 à 13) + plans / abonnements / paiements
+const billing = require('./billing.routes');
+router.use('/search', require('./search.routes'));
+router.use('/candidates', require('./candidates.routes'));
+router.use('/recruiter', require('./recruiter.routes'));
+router.use('/me', require('./me.routes'));
+router.use('/plans', billing.plans);
+router.use('/subscriptions', billing.subscriptions);
+router.use('/payments', billing.payments);
+
+// Publication « + Publier » (module 06)
+const publish = require('./publish.routes');
+router.use('/drafts', publish.drafts);
+router.use('/uploads', publish.uploads);
+
 module.exports = router;

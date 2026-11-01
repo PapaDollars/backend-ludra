@@ -17,6 +17,33 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({ storage, fileFilter, limits: { fileSize: MAX_SIZE } });
 
+// ─── Médias de publication (POST /uploads) : 10 Mo, un seul fichier ─────────
+const PUBLICATION_MAX_SIZE = 10 * 1024 * 1024;
+const publicationMulter = multer({
+  storage,
+  limits: { fileSize: PUBLICATION_MAX_SIZE, files: 1 },
+  fileFilter: (req, file, cb) => {
+    if (ALLOWED_TYPES.includes(file.mimetype)) return cb(null, true);
+    const err = new Error('Format non supporté. Utilisez JPG, PNG ou WebP.');
+    err.statusCode = 422;
+    return cb(err, false);
+  },
+});
+
+/** Champ `file` ; erreurs multer converties en réponses 4xx lisibles (au lieu d'une 500). */
+const uploadPublicationFile = (req, res, next) => {
+  publicationMulter.single('file')(req, res, (err) => {
+    if (!err) return next();
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ success: false, code: 'FILE_TOO_LARGE', message: 'Image trop volumineuse (10 Mo maximum).' });
+    }
+    if (err instanceof multer.MulterError) {
+      return res.status(400).json({ success: false, message: 'Envoyez une seule image dans le champ « file ».' });
+    }
+    return res.status(err.statusCode || 400).json({ success: false, code: 'UNSUPPORTED_FORMAT', message: err.message });
+  });
+};
+
 /**
  * Convertit un buffer multer en data URI base64 pour Cloudinary
  */
@@ -69,6 +96,7 @@ const deleteFromCloudinary = async (publicId) => {
 
 module.exports = {
   upload,
+  uploadPublicationFile,
   uploadToCloudinary,
   uploadAvatarToCloudinary,
   uploadMultipleToCloudinary,
