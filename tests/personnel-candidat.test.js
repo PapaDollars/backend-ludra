@@ -159,3 +159,49 @@ test('Modifier une ville sans perdre les autres informations', async () => {
     'Professionnel expérimenté et disponible'
   );
 });
+
+
+test('Un propriétaire ne peut pas créer un profil candidat pour autrui', async () => {
+  const owner = {
+    ...makeUser(),
+    role: 'proprietaire',
+  };
+
+  await assert.rejects(
+    drafts.createDraft(owner, {
+      type: 'personnel',
+      candidate: validCandidate(),
+      onBehalfOf: {
+        userId: 'autre_candidat_123',
+      },
+    }),
+    (error) => error.statusCode === 403
+  );
+});
+
+test('Un ancien brouillon délégué ne peut pas publier un candidat', async () => {
+  const { db } = require('../src/config/firebase');
+
+  const owner = {
+    ...makeUser(),
+    role: 'proprietaire',
+  };
+
+  const draft = await drafts.createDraft(owner, {
+    type: 'personnel',
+    candidate: validCandidate(),
+  });
+
+  // Simule un ancien brouillon contenant une délégation.
+  await db.collection('drafts').doc(draft.id).update({
+    onBehalfOf: {
+      userId: 'autre_candidat_456',
+      name: 'Candidat externe',
+    },
+  });
+
+  await assert.rejects(
+    drafts.publishDraft(owner, draft.id),
+    (error) => error.statusCode === 403
+  );
+});

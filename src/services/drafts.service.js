@@ -139,6 +139,16 @@ const createDraft = async (user, body = {}) => {
     throw new AppError(`Vous avez déjà ${MAX_DRAFTS_PER_USER} brouillons. Publiez-en ou supprimez-en avant d'en créer un autre.`, 409, 'DRAFT_LIMIT');
   }
 
+
+if (body.onBehalfOf && body.type === 'personnel') {
+  throw new AppError(
+    'La création d’un profil candidat pour autrui est interdite.',
+    403,
+    'CANDIDATE_DELEGATION_FORBIDDEN'
+  );
+}
+
+
   let onBehalfOf = null;
   if (body.onBehalfOf) {
     if (!canActOnBehalf(user)) throw new AppError('Permission insuffisante pour publier pour le compte d\'un utilisateur.', 403, 'FORBIDDEN');
@@ -230,6 +240,14 @@ const publishDraft = async (user, id) => {
     const what = draft.type === 'immobilier' ? 'des biens immobiliers' : 'des services';
     throw new AppError(`La publication ${what} n'est pas encore disponible. Votre brouillon est conservé.`, 501, 'NOT_IMPLEMENTED');
   }
+
+if (draft.type === 'personnel' && draft.onBehalfOf) {
+  throw new AppError(
+    'Vous ne pouvez pas publier un profil candidat pour une autre personne.',
+    403,
+    'CANDIDATE_DELEGATION_FORBIDDEN'
+  );
+}
 
   // Publication pour le compte d'un utilisateur : permission revérifiée au moment de publier
   let publisher = user;
