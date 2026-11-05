@@ -231,43 +231,141 @@ const verifiedMedia = async (draft) => {
  * `POST /drafts/:id/publish` : validation complète puis publication ; le brouillon est supprimé en cas de succès.
  * @returns {Promise<{ status: 'published' | 'pending_review' | 'pending_kyc', universe: string, itemId: string }>}
  */
+
 const publishDraft = async (user, id) => {
   const snap = await getOwnDraftDoc(user.id, id);
   const draft = { id: snap.id, ...snap.data() };
 
-  if (!draft.type) throw validationError([{ field: 'type', message: 'Choisissez un type de publication.' }]);
-  if (!PUBLISHABLE.includes(draft.type)) {
-    const what = draft.type === 'immobilier' ? 'des biens immobiliers' : 'des services';
-    throw new AppError(`La publication ${what} n'est pas encore disponible. Votre brouillon est conservé.`, 501, 'NOT_IMPLEMENTED');
+  if (!draft.type) {
+    throw validationError([
+      { field: 'type', message: 'Choisissez un type de publication.' },
+    ]);
   }
 
-if (draft.type === 'personnel' && draft.onBehalfOf) {
-  throw new AppError(
-    'Vous ne pouvez pas publier un profil candidat pour une autre personne.',
-    403,
-    'CANDIDATE_DELEGATION_FORBIDDEN'
-  );
-}
+  if (!PUBLISHABLE.includes(draft.type)) {
+    const what = draft.type === 'immobilier'
+      ? 'des biens immobiliers'
+      : 'des services';
 
-  // Publication pour le compte d'un utilisateur : permission revérifiée au moment de publier
+    throw new AppError(
+      `La publication ${what} n'est pas encore disponible. Votre brouillon est conservé.`,
+      501,
+      'NOT_IMPLEMENTED'
+    );
+  }
+
+  // Les permissions immobilières ne permettent pas
+  // de publier un profil candidat pour autrui.
+  if (draft.type === 'personnel' && draft.onBehalfOf) {
+    throw new AppError(
+      'Vous ne pouvez pas publier un profil candidat pour une autre personne.',
+      403,
+      'CANDIDATE_DELEGATION_FORBIDDEN'
+    );
+  }
+
   let publisher = user;
+
   if (draft.onBehalfOf) {
-    if (!canActOnBehalf(user)) throw new AppError('Permission insuffisante pour publier pour le compte d\'un utilisateur.', 403, 'FORBIDDEN');
+    if (!canActOnBehalf(user)) {
+      throw new AppError(
+        'Permission insuffisante.',
+        403,
+        'FORBIDDEN'
+      );
+    }
+
     publisher = await getUser(draft.onBehalfOf.userId);
-    if (!publisher || publisher.isActive === false) throw notFound('Utilisateur introuvable');
+
+    if (!publisher || publisher.isActive === false) {
+      throw notFound('Utilisateur introuvable');
+    }
   }
 
   const media = await verifiedMedia(draft);
-  const sub = await getActiveSubscription(publisher.id, 'candidate');
-  const result = await publishCandidateProfile(publisher, draft.candidate || {}, media, candidatePlanOf(sub));
 
+  const sub = await getActiveSubscription(
+    publisher.id,
+    'candidate'
+  );
+
+  // Une réservation unique pour chaque brouillon.
+  const claimRef = db.collection('draft_publish_claims').doc(id);
+
+  try {
+    await claimRef.create({
+      draftId: id,
+      userId: user.id,
+      status: 'publishing',
+      createdAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    if (
+      err.code === 6 ||
+      err.code === 'already-exists' ||
+      /ALREADY_EXISTS/i.test(err.message || '')
+    ) {
+      throw new AppError(
+        'Ce brouillon est déjà en cours de publication ou a été publié.',
+        409,
+        'DRAFT_ALREADY_CLAIMED'
+      );
+    }
+
+    throw err;
+  }
+
+  let result;
+
+  try {
+    result = await publishCandidateProfile(
+      publisher,
+      draft.candidate || {},
+      media,
+      candidatePlanOf(sub)
+    );
+  } catch (err) {
+    // Libération de la réservation en cas d'échec
+    // afin de permettre une nouvelle tentative.
+    try {
+      await claimRef.delete();
+    } catch (unlockError) {
+      console.error(
+        '[drafts] Libération impossible :',
+        unlockError
+      );
+    }
+
+    throw err;
+  }
+
+  // Supprimer le brouillon uniquement après publication.
   await snap.ref.delete();
+
+  // Garder une trace de la publication réussie.
+  try {
+    await claimRef.update({
+      status: 'published',
+      itemId: result.itemId,
+      updatedAt: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error(
+      '[drafts] Mise à jour de réservation impossible :',
+      err
+    );
+  }
+
   if (draft.onBehalfOf) {
     await createAuditEntry(user, {
-      action: 'publication.on_behalf', targetType: 'user', targetId: publisher.id,
-      targetLabel: `${publisher.name || publisher.email} — profil candidat`,
+      action: 'publication.on_behalf',
+      targetType: 'user',
+      targetId: publisher.id,
+      targetLabel:
+        `${publisher.name || publisher.email} — profil candidat`,
     });
   }
+
   return result;
 };
 

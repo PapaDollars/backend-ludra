@@ -205,3 +205,69 @@ test('Un ancien brouillon délégué ne peut pas publier un candidat', async () 
     (error) => error.statusCode === 403
   );
 });
+
+test('Deux publications simultanées ne doivent pas traiter deux fois le même brouillon', async () => {
+  const user = makeUser();
+
+  const draft = await drafts.createDraft(user, {
+    type: 'personnel',
+    candidate: validCandidate(),
+  });
+
+  // Simuler deux clics sur le bouton Publier.
+  const results = await Promise.allSettled([
+    drafts.publishDraft(user, draft.id),
+    drafts.publishDraft(user, draft.id),
+  ]);
+
+  const successes = results.filter(
+    (result) => result.status === 'fulfilled'
+  );
+
+  // Une seule requête doit réellement publier le brouillon.
+  assert.equal(
+    successes.length,
+    1,
+    'Un même brouillon ne doit être publié qu’une seule fois'
+  );
+
+  // Le profil candidat doit exister après publication.
+  const profile = await getCandidate(user.id);
+
+  assert.ok(profile);
+  assert.equal(profile.status, 'active');
+});
+
+test('Un candidat peut corriger un brouillon après un échec de publication', async () => {
+  const user = makeUser();
+
+  // Création d'un profil volontairement incomplet.
+  const draft = await drafts.createDraft(user, {
+    type: 'personnel',
+    candidate: {
+      title: 'Test',
+    },
+  });
+
+  // La première publication doit échouer.
+  await assert.rejects(
+    drafts.publishDraft(user, draft.id),
+    (error) => error.statusCode === 422
+  );
+
+  // Le candidat complète son profil.
+  await drafts.updateDraft(user.id, draft.id, {
+    candidate: validCandidate(),
+  });
+
+  // Il doit pouvoir publier à nouveau.
+  const result = await drafts.publishDraft(user, draft.id);
+
+  assert.equal(result.status, 'published');
+  assert.equal(result.itemId, user.id);
+
+  const profile = await getCandidate(user.id);
+
+  assert.ok(profile);
+  assert.equal(profile.status, 'active');
+});
