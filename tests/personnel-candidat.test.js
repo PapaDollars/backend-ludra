@@ -210,7 +210,10 @@ test('Un ancien brouillon délégué ne peut pas publier un candidat', async () 
   );
 });
 
-test('Deux publications simultanées ne doivent pas traiter deux fois le même brouillon', async () => {
+
+test('Deux publications simultanées renvoient le même résultat sans republier', async () => {
+  const { db } = require('../src/config/firebase');
+
   const user = makeUser();
 
   const draft = await drafts.createDraft(user, {
@@ -218,29 +221,85 @@ test('Deux publications simultanées ne doivent pas traiter deux fois le même b
     candidate: validCandidate(),
   });
 
-  // Simuler deux clics sur le bouton Publier.
+  // 1. Simuler deux clics simultanés sur Publier.
   const results = await Promise.allSettled([
     drafts.publishDraft(user, draft.id),
     drafts.publishDraft(user, draft.id),
   ]);
 
-  const successes = results.filter(
-    (result) => result.status === 'fulfilled'
+  // 2. Les deux demandes doivent réussir.
+  assert.equal(results[0].status, 'fulfilled');
+  assert.equal(results[1].status, 'fulfilled');
+
+  // 3. Elles doivent retourner exactement le même résultat.
+  const firstResult = results[0].value;
+  const secondResult = results[1].value;
+
+  assert.deepEqual(
+    secondResult,
+    firstResult,
+    'Les deux requêtes doivent retourner le même résultat'
   );
 
-  // Une seule requête doit réellement publier le brouillon.
-  assert.equal(
-    successes.length,
-    1,
-    'Un même brouillon ne doit être publié qu’une seule fois'
-  );
+  assert.equal(firstResult.itemId, user.id);
+  assert.equal(firstResult.universe, 'personnel');
 
-  // Le profil candidat doit exister après publication.
+  // 4. Le profil candidat doit exister.
   const profile = await getCandidate(user.id);
 
   assert.ok(profile);
   assert.equal(profile.status, 'active');
+
+  // 5. Le brouillon doit avoir été supprimé.
+  const draftSnapshot = await db
+    .collection('drafts')
+    .doc(draft.id)
+    .get();
+
+  assert.equal(
+    draftSnapshot.exists,
+    false,
+    'Le brouillon doit disparaître après publication'
+  );
+
+  // 6. La trace de publication doit être confirmée.
+  const claimSnapshot = await db
+    .collection('draft_publish_claims')
+    .doc(draft.id)
+    .get();
+
+  assert.equal(claimSnapshot.exists, true);
+  assert.equal(claimSnapshot.data().status, 'published');
+
+  assert.deepEqual(
+    claimSnapshot.data().result,
+    firstResult,
+    'Le résultat doit être conservé pour les nouvelles tentatives'
+  );
+
+  // 7. Sauvegarder l'état du profil avant une nouvelle tentative.
+  const profileRef = db.collection('candidates').doc(user.id);
+  const beforeReplay = (await profileRef.get()).data();
+
+  // Simuler une nouvelle demande après la publication.
+  const replayResult = await drafts.publishDraft(user, draft.id);
+
+  assert.deepEqual(
+    replayResult,
+    firstResult,
+    'Une nouvelle tentative doit récupérer le résultat initial'
+  );
+
+  // 8. Vérifier qu'aucune réécriture du profil n'a eu lieu.
+  const afterReplay = (await profileRef.get()).data();
+
+  assert.deepEqual(
+    afterReplay,
+    beforeReplay,
+    'Une nouvelle tentative ne doit pas modifier le profil publié'
+  );
 });
+
 
 test('Un candidat peut corriger un brouillon après un échec de publication', async () => {
   const user = makeUser();
@@ -529,4 +588,73 @@ const trainedKribi = await findActiveCandidates({
     after.some((c) => c.id === user.id),
     'Le candidat formé et vérifié doit apparaître'
   );
+});
+
+test('Publication atomique : une erreur conserve le brouillon et annule les écritures', async () => {
+  const { db } = require('../src/config/firebase');
+
+  const user = makeUser();
+
+  const draft = await drafts.createDraft(user, {
+    type: 'personnel',
+    candidate: {
+      ...validCandidate(),
+      training: 'Formation professionnelle certifiée',
+    },
+  });
+
+  // Simuler une panne au moment de créer la confirmation.
+  const originalCreate = db._create;
+
+  db._create = function (path, data) {
+    if (path === `draft_publish_claims/${draft.id}`) {
+      throw new Error('SIMULATED_TRANSACTION_WRITE_FAILURE');
+    }
+
+    return originalCreate.call(this, path, data);
+  };
+
+  try {
+    await assert.rejects(
+      drafts.publishDraft(user, draft.id),
+      /SIMULATED_TRANSACTION_WRITE_FAILURE/
+    );
+  } finally {
+    // Restaurer systématiquement le simulateur.
+    db._create = originalCreate;
+  }
+
+  // Le profil ne doit pas avoir été enregistré.
+  const profile = await db.collection('candidates')
+    .doc(user.id)
+    .get();
+
+  assert.equal(profile.exists, false);
+
+  // Le brouillon doit être conservé.
+  const draftSnapshot = await db.collection('drafts')
+    .doc(draft.id)
+    .get();
+
+  assert.equal(draftSnapshot.exists, true);
+
+  // Aucune confirmation de publication ne doit exister.
+  const claim = await db.collection('draft_publish_claims')
+    .doc(draft.id)
+    .get();
+
+  assert.equal(claim.exists, false);
+
+  // Une éventuelle preuve de formation doit aussi être annulée.
+  const proof = await db.collection('proofs')
+    .doc(`training_${user.id}`)
+    .get();
+
+  assert.equal(proof.exists, false);
+
+  // Après la panne simulée, le candidat peut réessayer.
+  const result = await drafts.publishDraft(user, draft.id);
+
+  assert.equal(result.itemId, user.id);
+  assert.equal(result.status, 'published');
 });
