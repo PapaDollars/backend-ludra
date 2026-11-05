@@ -168,12 +168,38 @@ const getDraft = async (userId, id) => {
 };
 
 /** `PATCH /drafts/:id` : remplace les champs envoyés (1 lecture + 1 écriture). */
+
 const updateDraft = async (userId, id, body) => {
   const snap = await getOwnDraftDoc(userId, id);
-  const updates = { ...cleanPatch(body), updatedAt: new Date().toISOString() };
+
+  const cleaned = cleanPatch(body);
+  const { candidate, ...otherUpdates } = cleaned;
+
+  const updates = {
+    ...otherUpdates,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Mettre à jour uniquement les champs envoyés
+  if (candidate !== undefined) {
+    for (const [field, value] of Object.entries(candidate)) {
+      updates[`candidate.${field}`] = value;
+    }
+  }
+
   await snap.ref.update(updates);
-  return toDraft(snap.id, { ...snap.data(), ...updates });
+
+  return toDraft(snap.id, {
+    ...snap.data(),
+    ...otherUpdates,
+    candidate: {
+      ...(snap.data().candidate || {}),
+      ...(candidate || {}),
+    },
+    updatedAt: updates.updatedAt,
+  });
 };
+
 
 const deleteDraft = async (userId, id) => {
   const snap = await getOwnDraftDoc(userId, id);
