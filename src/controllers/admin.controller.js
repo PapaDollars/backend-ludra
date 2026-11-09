@@ -7,6 +7,7 @@ const { getAllUsers, invalidateUser } = require('../utils/userCache');
 const { AppError, notFound, validationError } = require('../utils/AppError');
 const { createNotification } = require('../utils/notifications');
 const { invalidateCandidate } = require('../services/candidates.service');
+const { reconcilePaymentForAdmin, listAdminPayments, paymentStatsToday } = require('../services/payments.service');
 
 // Permissions RBAC V2.1 (miroir de frontend-ludra/src/lib/adminPermissions.ts)
 const ADMIN_PERMISSIONS = [
@@ -45,6 +46,11 @@ exports.getStats = async (req, res) => {
     usersRef.where('role', '==', 'proprietaire').get(),
     db.collection('proofs').where('status', '==', 'a_verifier').count().get(),
   ]);
+  // Un index manquant ou une erreur ponctuelle ne doit pas casser tout le tableau de bord
+  const paymentStats = await paymentStatsToday().catch((err) => {
+    console.error('[admin/stats] Chiffres de paiement indisponibles :', err.message);
+    return { paymentsToday: 0, paymentsTodayCount: 0, failedPayments24h: 0 };
+  });
   const owners = ownersSnap.docs.map((d) => d.data());
   const recentOwners = owners.filter((u) => u.createdAt && new Date(u.createdAt) >= weekAgo).length;
 
@@ -56,9 +62,7 @@ exports.getStats = async (req, res) => {
     pendingListings: 0,
     openReports: 0,
     pendingProofs: proofsCount.data().count,
-    paymentsToday: 0,
-    paymentsTodayCount: 0,
-    failedPayments24h: 0,
+    ...paymentStats,
   });
 };
 
@@ -251,3 +255,20 @@ exports.decideProof = async (req, res) => {
 
   return ApiResponse.success(res, null, 'Décision enregistrée');
 };
+
+/**
+ * POST /admin/payments/:id/reconcile — permission `manage_payments`.
+ * Interroge l'opérateur pour un paiement `pending` sans webhook ; 409 sinon. Journalisé (`payment.reconcile`).
+ */
+exports.reconcilePayment = async (req, res) => {
+  const payment = await reconcilePaymentForAdmin(req.params.id);
+  await createAuditEntry(req.user, {
+    action: 'payment.reconcile', targetType: 'payment', targetId: payment.id,
+    targetLabel: `${payment.label} — ${payment.userName}`,
+    ...(payment.status !== 'pending' && { changes: [{ field: 'status', from: 'pending', to: payment.status }] }),
+  });
+  return ApiResponse.success(res, payment, payment.status === 'pending' ? 'Toujours en attente chez l’opérateur' : 'Paiement réconcilié');
+};
+
+/** GET /admin/payments?status=&purpose= — permission `view_payments` → `AdminPayment[]` (200 plus récents). */
+exports.getPayments = async (req, res) => ApiResponse.success(res, await listAdminPayments(req.query));

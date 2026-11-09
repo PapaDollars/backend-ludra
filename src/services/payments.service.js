@@ -5,7 +5,8 @@ const { createNotification } = require('../utils/notifications');
 const { findPlan } = require('./settings.service');
 const { prepareActivation, invalidateSubscriptions } = require('./subscriptions.service');
 const { invalidateCandidate } = require('./candidates.service');
-const { getProvider, SIMULATION_DELAY_MS } = require('./mobileMoney');
+const { getProvider, getLiveProviderByName, LIVE_PROVIDER_NAMES, SIMULATION_DELAY_MS } = require('./mobileMoney');
+const { getUser } = require('../utils/userCache');
 
 /**
  * Paiements Mobile Money (`Payment`, contrat V2.1 étapes 3, 6 et 8), collection `payments`.
@@ -18,6 +19,7 @@ const { getProvider, SIMULATION_DELAY_MS } = require('./mobileMoney');
 const COLLECTION = 'payments';
 const OPERATORS = ['mtn_momo', 'orange_money'];
 const PENDING_TTL_MS = 15 * 60 * 1000;
+const RECONCILE_MIN_INTERVAL_MS = 10 * 1000;
 const ALREADY_EXISTS = 6; // code gRPC Firestore
 
 const col = () => db.collection(COLLECTION);
@@ -35,6 +37,14 @@ const toPayment = (id, d) => ({
   createdAt: d.createdAt,
   ...(d.paidAt && { paidAt: d.paidAt }),
   ...(d.failureReason && { failureReason: d.failureReason }),
+});
+
+/** `PaymentRecord` : `Payment` + libellé, plan, et numéro de reçu (paiements `paid` uniquement). */
+const toPaymentRecord = (id, d) => ({
+  ...toPayment(id, d),
+  label: d.label || 'Paiement',
+  ...(d.status === 'paid' && d.receiptNumber && { receiptNumber: d.receiptNumber }),
+  ...(d.planCode && { plan: { code: d.planCode, name: d.planName || d.planCode } }),
 });
 
 const paymentId = (userId, idempotencyKey) =>
@@ -71,6 +81,13 @@ const settlePayment = async (id, { status, failureReason, operatorReference }) =
     const p = snap.data();
     if (p.status !== 'pending') return { changed: false, payment: p };
 
+    // Numéro de reçu : séquentiel et unique par année, attribué dans la même transaction que le passage à `paid`
+    // (lecture du compteur avant toute écriture ; un échec de transaction ne consomme aucun numéro)
+    const year = new Date().getUTCFullYear();
+    const counterRef = status === 'paid' ? db.collection('counters').doc(`receipts_${year}`) : null;
+    const counterSnap = counterRef ? await tx.get(counterRef) : null;
+    const receiptSeq = counterSnap ? ((counterSnap.exists && counterSnap.data().last) || 0) + 1 : 0;
+
     const write = status === 'paid' && p.purpose === 'subscription' && plan
       ? await prepareActivation(tx, { id, userId: p.userId }, plan)
       : null;
@@ -79,11 +96,12 @@ const settlePayment = async (id, { status, failureReason, operatorReference }) =
     const updates = {
       status,
       updatedAt: now,
-      ...(status === 'paid' && { paidAt: now }),
+      ...(status === 'paid' && { paidAt: now, receiptNumber: `REC-${year}-${String(receiptSeq).padStart(6, '0')}` }),
       ...(status !== 'paid' && { failureReason: failureReason || 'Le paiement n’a pas abouti. Aucun montant n’a été débité.' }),
       ...(operatorReference && { operatorReference }),
     };
     tx.update(ref, updates);
+    if (counterRef) tx.set(counterRef, { last: receiptSeq, updatedAt: now });
     const activation = write ? write() : null;
     return { changed: true, payment: { ...p, ...updates }, activation };
   });
@@ -103,14 +121,44 @@ const settlePayment = async (id, { status, failureReason, operatorReference }) =
   return p;
 };
 
-/** Règlements différés (simulation, paiement expiré) : appliqués à la lecture si l'échéance est passée. */
+/**
+ * Vérifie un paiement `pending` auprès du fournisseur réel (appel serveur → opérateur) et le règle si l'issue est connue.
+ * Seule source de `paid` pour un fournisseur réel : le callback n'est qu'un déclencheur.
+ * @returns {Promise<object|null>} document à jour, ou null si la vérification est impossible (erreur, pas de fournisseur)
+ */
+const reconcilePayment = async (id, d) => {
+  const provider = getLiveProviderByName(d.provider);
+  if (!provider || !d.operatorReference) return null;
+  try {
+    const result = await provider.getStatus({ id, ...d });
+    if (result.status === 'pending') return d;
+    return (await settlePayment(id, { status: result.status, failureReason: result.failureReason, operatorReference: d.operatorReference })) || d;
+  } catch (err) {
+    console.error(`[paiements] Vérification ${d.provider} impossible pour ${id} :`, err.message);
+    return null;
+  }
+};
+
+/** Règlements différés (simulation, vérification opérateur, paiement expiré) : appliqués à la lecture. */
 const settleIfDue = async (id, d) => {
   if (d.status !== 'pending') return d;
   const now = Date.now();
   if (d.simulation && Date.parse(d.simulation.resolveAt) <= now) {
     return (await settlePayment(id, { status: d.simulation.outcome, failureReason: d.simulation.failureReason })) || d;
   }
-  if (Date.parse(d.createdAt) + PENDING_TTL_MS <= now) {
+  const expired = Date.parse(d.createdAt) + PENDING_TTL_MS <= now;
+  if (getLiveProviderByName(d.provider) && d.operatorReference) {
+    // Filet si le callback est perdu : le suivi du front (toutes les 3 s) vérifie auprès de l'opérateur, au plus toutes les 10 s.
+    const due = expired || !d.checkedAt || Date.parse(d.checkedAt) + RECONCILE_MIN_INTERVAL_MS <= now;
+    if (due) {
+      await col().doc(id).update({ checkedAt: new Date(now).toISOString() });
+      const checked = await reconcilePayment(id, d);
+      // Délai dépassé mais opérateur injoignable : on n'expire pas à l'aveugle (le paiement a pu être débité).
+      if (expired && !checked) return d;
+      if (checked && checked.status !== 'pending') return checked;
+    }
+  }
+  if (expired) {
     return (await settlePayment(id, { status: 'expired', failureReason: 'Délai de confirmation dépassé. Aucun montant n’a été débité.' })) || d;
   }
   return d;
@@ -126,7 +174,7 @@ const settleIfDue = async (id, d) => {
  */
 const createPayment = async (user, input) => {
   validateMobileMoneyInput(input);
-  const provider = getProvider(); // 503 avant toute écriture si aucun fournisseur n'est utilisable
+  const provider = getProvider(input.operator); // 503 avant toute écriture si aucun fournisseur n'est utilisable
 
   const id = paymentId(user.id, input.idempotencyKey);
   const ref = col().doc(id);
@@ -141,6 +189,7 @@ const createPayment = async (user, input) => {
     payerPhone: input.payerPhone,
     label: input.label,
     ...(input.planCode && { planCode: input.planCode }),
+    ...(input.planName && { planName: input.planName }),
     ...(input.listingId && { listingId: input.listingId }),
     provider: provider.name,
     createdAt: now,
@@ -197,6 +246,7 @@ const createSubscriptionPayment = async (user, { planCode, ...mm }) => {
     purpose: 'subscription',
     amount: plan.price,
     planCode: plan.code,
+    planName: plan.name,
     label: `${plan.period === 'month' ? 'Abonnement' : 'Plan'} ${plan.name} — ${audienceLabel}`,
   });
 };
@@ -209,4 +259,166 @@ const getPaymentForUser = async (user, id) => {
   return toPayment(id, await settleIfDue(id, snap.data()));
 };
 
-module.exports = { createSubscriptionPayment, getPaymentForUser, settlePayment, toPayment, OPERATORS };
+/**
+ * Callback opérateur : identifie le paiement par la référence (payToken) puis le VÉRIFIE auprès de l'opérateur.
+ * Le contenu du callback n'est jamais utilisé comme résultat.
+ * @returns {Promise<boolean>} true si un paiement correspondant a été trouvé
+ */
+const handleProviderNotification = async (providerName, payload) => {
+  const provider = getLiveProviderByName(providerName);
+  const reference = provider && provider.extractReference(payload);
+  if (!reference) return false;
+  const found = await col().where('provider', '==', providerName).where('operatorReference', '==', reference).limit(1).get();
+  if (found.empty) return false;
+  const doc = found.docs[0];
+  await doc.ref.update({ webhook: 'received', webhookAt: new Date().toISOString() });
+  await reconcilePayment(doc.id, doc.data());
+  return true;
+};
+
+// ─── RÉCONCILIATION (tâche planifiée + back-office) ──────────────────────────
+
+/**
+ * Vérifie auprès de l'opérateur les paiements `pending` des fournisseurs réels (callback perdu, plus personne ne suit
+ * le paiement) et expire ceux dont le délai est dépassé. Un paiement en erreur n'arrête pas le lot.
+ * @returns {Promise<{ checked: number, settled: number }>}
+ */
+const reconcilePendingBatch = async (limit = 50) => {
+  if (!LIVE_PROVIDER_NAMES.length) return { checked: 0, settled: 0 };
+  const snap = await col().where('status', '==', 'pending').where('provider', 'in', LIVE_PROVIDER_NAMES).limit(limit).get();
+  let settled = 0;
+  for (const doc of snap.docs) {
+    try {
+      const after = await settleIfDue(doc.id, doc.data());
+      if (after.status !== 'pending') settled += 1;
+    } catch (err) {
+      console.error(`[paiements] Réconciliation de ${doc.id} échouée :`, err.message);
+    }
+  }
+  return { checked: snap.size, settled };
+};
+
+/** `AdminPayment` : `Payment` + libellé, nom du payeur, référence opérateur et état du webhook. */
+const toAdminPayment = (id, d, userName) => ({
+  ...toPaymentRecord(id, d),
+  userName,
+  ...(d.operatorReference && { operatorReference: d.operatorReference }),
+  webhook: d.webhook || 'missing',
+});
+
+/**
+ * `POST /admin/payments/:id/reconcile` : interroge l'opérateur pour un paiement `pending` (sans respecter l'intervalle
+ * de 10 s). 404 inconnu · 409 non `pending` ou non vérifiable (simulation, pas de référence) · 502 opérateur injoignable.
+ * @returns {Promise<object>} `AdminPayment` à jour
+ */
+const reconcilePaymentForAdmin = async (id) => {
+  if (typeof id !== 'string' || !/^pay_[a-f0-9]{24}$/.test(id)) throw notFound('Paiement introuvable');
+  const snap = await col().doc(id).get();
+  if (!snap.exists) throw notFound('Paiement introuvable');
+  const d = snap.data();
+  if (d.status !== 'pending') throw new AppError('Ce paiement n’est plus en attente.', 409, 'NOT_PENDING');
+  if (!getLiveProviderByName(d.provider) || !d.operatorReference) {
+    throw new AppError('Ce paiement ne peut pas être vérifié auprès d’un opérateur.', 409, 'NOT_RECONCILABLE');
+  }
+  const after = await reconcilePayment(id, d);
+  if (!after) throw new AppError('L’opérateur est injoignable ou a répondu de façon inattendue, réessayez plus tard.', 502, 'PROVIDER_UNREACHABLE');
+  const user = await getUser(d.userId).catch(() => null);
+  return toAdminPayment(id, after, (user && (user.name || user.email)) || d.userId);
+};
+
+// ─── HISTORIQUE ET REÇUS (Mon compte) ────────────────────────────────────────
+
+const PURPOSES = ['unlock_contact', 'subscription'];
+const STATUSES = ['pending', 'paid', 'failed', 'expired', 'cancelled'];
+const HISTORY_LIMIT = 100;
+const ADMIN_LIMIT = 200;
+const PENDING_REFRESH_MAX = 5; // paiements `pending` revérifiés à la lecture d'une liste (bornes de coût)
+
+const byCreatedDesc = (a, b) => String(b.data().createdAt).localeCompare(String(a.data().createdAt));
+
+/**
+ * Requête filtrée + triée par date. Sans l'index composite correspondant (déjà déclaré dans firestore.indexes.json,
+ * mais pas forcément déployé), repli sur un tri en mémoire des seuls documents filtrés.
+ */
+const queryByDate = async (base, limit) => {
+  try {
+    return (await base.orderBy('createdAt', 'desc').limit(limit).get()).docs;
+  } catch (err) {
+    if (!(err && (err.code === 9 || /FAILED_PRECONDITION|requires an index/i.test(err.message || '')))) throw err;
+    console.warn('[paiements] Index composite manquant — tri en mémoire :', err.message);
+    return (await base.get()).docs.sort(byCreatedDesc).slice(0, limit);
+  }
+};
+
+/** Règle (délai dépassé, vérification opérateur) les quelques paiements `pending` d'une liste. */
+const refreshPending = async (docs) => {
+  const out = new Map();
+  let budget = PENDING_REFRESH_MAX;
+  for (const doc of docs) {
+    const d = doc.data();
+    if (d.status === 'pending' && budget > 0) {
+      budget -= 1;
+      try { out.set(doc.id, await settleIfDue(doc.id, d)); continue; } catch (err) {
+        console.error(`[paiements] Rafraîchissement de ${doc.id} échoué :`, err.message);
+      }
+    }
+    out.set(doc.id, d);
+  }
+  return out;
+};
+
+/** `GET /me/payments` : `PaymentRecord[]`, plus récents d'abord, tous statuts. */
+const listMyPayments = async (user) => {
+  const docs = await queryByDate(col().where('userId', '==', user.id), HISTORY_LIMIT);
+  const fresh = await refreshPending(docs);
+  return docs.map((doc) => toPaymentRecord(doc.id, fresh.get(doc.id)));
+};
+
+/** `GET /me/payments/:id` : reçu d'un de mes paiements (404 sinon, sans révéler son existence). */
+const getMyPayment = async (user, id) => {
+  if (typeof id !== 'string' || !/^pay_[a-f0-9]{24}$/.test(id)) throw notFound('Paiement introuvable');
+  const snap = await col().doc(id).get();
+  if (!snap.exists || snap.data().userId !== user.id) throw notFound('Paiement introuvable');
+  return toPaymentRecord(id, await settleIfDue(id, snap.data()));
+};
+
+/** `GET /admin/payments?status=&purpose=` : `AdminPayment[]` (les 200 plus récents correspondant aux filtres). */
+const listAdminPayments = async ({ status, purpose } = {}) => {
+  const errors = [];
+  if (status !== undefined && !STATUSES.includes(status)) errors.push({ field: 'status', message: `Statut invalide (${STATUSES.join(' | ')}).` });
+  if (purpose !== undefined && !PURPOSES.includes(purpose)) errors.push({ field: 'purpose', message: `Objet invalide (${PURPOSES.join(' | ')}).` });
+  if (errors.length) throw validationError(errors);
+
+  let base = col();
+  if (status) base = base.where('status', '==', status);
+  if (purpose) base = base.where('purpose', '==', purpose);
+  const docs = await queryByDate(base, ADMIN_LIMIT);
+
+  const userIds = [...new Set(docs.map((d) => d.data().userId))];
+  const users = userIds.length ? await db.getAll(...userIds.map((u) => db.collection('users').doc(u))) : [];
+  const names = new Map(users.map((u) => [u.id, u.exists ? (u.data().name || u.data().email) : null]));
+  return docs.map((doc) => toAdminPayment(doc.id, doc.data(), names.get(doc.data().userId) || doc.data().userId));
+};
+
+/** Chiffres du jour pour `GET /admin/stats` (fuseau Africa/Douala, UTC+1 sans changement d'heure). */
+const paymentStatsToday = async () => {
+  const dayMs = 24 * 60 * 60 * 1000;
+  const offset = 60 * 60 * 1000;
+  const startOfDay = new Date(Math.floor((Date.now() + offset) / dayMs) * dayMs - offset).toISOString();
+  const since24h = new Date(Date.now() - dayMs).toISOString();
+  const [paid, failed] = await Promise.all([
+    col().where('status', '==', 'paid').where('paidAt', '>=', startOfDay).get(),
+    col().where('status', '==', 'failed').where('updatedAt', '>=', since24h).count().get(),
+  ]);
+  return {
+    paymentsToday: paid.docs.reduce((sum, d) => sum + (d.data().amount || 0), 0),
+    paymentsTodayCount: paid.size,
+    failedPayments24h: failed.data().count,
+  };
+};
+
+module.exports = {
+  createSubscriptionPayment, getPaymentForUser, settlePayment, handleProviderNotification,
+  reconcilePendingBatch, reconcilePaymentForAdmin, listMyPayments, getMyPayment, listAdminPayments, paymentStatsToday,
+  toPayment, toPaymentRecord, OPERATORS,
+};

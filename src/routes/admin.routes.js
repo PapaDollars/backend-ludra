@@ -131,4 +131,48 @@ router.get('/proofs', requirePermission('review_kyc'), ctrl.getProofs);
  */
 router.post('/proofs/:id/decision', requirePermission('review_kyc'), ctrl.decideProof);
 
+/**
+ * @swagger
+ * /admin/payments:
+ *   get:
+ *     tags: [Admin]
+ *     summary: Paiements (AdminPayment[], 200 plus récents) — permission view_payments
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - { in: query, name: status, schema: { type: string, enum: [pending, paid, failed, expired, cancelled] } }
+ *       - { in: query, name: purpose, schema: { type: string, enum: [unlock_contact, subscription] } }
+ *     responses:
+ *       200:
+ *         description: AdminPayment[]
+ *       422:
+ *         description: VALIDATION_ERROR (filtre inconnu)
+ */
+router.get('/payments', requirePermission('view_payments'), ctrl.getPayments);
+
+/**
+ * @swagger
+ * /admin/payments/{id}/reconcile:
+ *   post:
+ *     tags: [Admin]
+ *     summary: Vérifier auprès de l'opérateur un paiement pending sans webhook (AdminPayment). Journalisé.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: AdminPayment à jour (le statut peut rester pending)
+ *       404:
+ *         description: Paiement introuvable
+ *       409:
+ *         description: NOT_PENDING ou NOT_RECONCILABLE
+ *       502:
+ *         description: PROVIDER_UNREACHABLE
+ */
+router.post('/payments/:id/reconcile', requirePermission('manage_payments'), ctrl.reconcilePayment);
+
 module.exports = router;

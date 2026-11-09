@@ -16,8 +16,10 @@ router.use('/search', require('./search.routes'));
 router.use('/candidates', require('./candidates.routes'));
 router.use('/recruiter', require('./recruiter.routes'));
 router.use('/me', require('./me.routes'));
+router.use('/conversations', require('./conversations.routes'));
 router.use('/plans', billing.plans);
 router.use('/subscriptions', billing.subscriptions);
+router.use('/payments/webhooks', billing.webhooks); // avant /payments (qui exige un JWT)
 router.use('/payments', billing.payments);
 
 // Publication « + Publier » (module 06)

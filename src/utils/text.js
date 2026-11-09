@@ -25,4 +25,21 @@ const maskContacts = (text) => {
     .replace(PHONE_RE, '[coordonnée masquée]');
 };
 
-module.exports = { normalize, tokenize, maskContacts };
+/**
+ * Modération d'un message de messagerie : mêmes règles que `maskContacts`, avec les indicateurs du contrat
+ * (`contact_masked`, `link_blocked`). Limite connue : une coordonnée écrite en toutes lettres ou volontairement
+ * déformée (« six sept sept… », « 6 7 7 point… ») n'est pas détectée.
+ * @returns {{ text: string, moderation: string[] }}
+ */
+const moderateMessage = (text) => {
+  const moderation = new Set();
+  const replace = (re, label, flag) => (s) => s.replace(re, () => { moderation.add(flag); return label; });
+  const out = [
+    replace(EMAIL_RE, '[coordonnée masquée]', 'contact_masked'),
+    replace(URL_RE, '[lien retiré]', 'link_blocked'),
+    replace(PHONE_RE, '[coordonnée masquée]', 'contact_masked'),
+  ].reduce((s, step) => step(s), String(text));
+  return { text: out, moderation: [...moderation] };
+};
+
+module.exports = { normalize, tokenize, maskContacts, moderateMessage };
