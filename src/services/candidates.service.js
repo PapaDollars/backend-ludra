@@ -211,7 +211,13 @@ const validateCandidateInput = (input = {}, media = []) => {
  * @param {{ plan?: string, planExpiresAt?: string }} [activePlan]  plan candidat actif (subscriptions.service)
  * @returns {Promise<{ status: 'published' | 'pending_review', universe: 'personnel', itemId: string }>}
  */
-const publishCandidateProfile = async (user, input, media = [], activePlan = {}) => {
+const publishCandidateProfile = async (
+  user,
+  input,
+  media = [],
+  activePlan = {},
+  transaction = null
+) => {
   const errors = validateCandidateInput(input, media);
   if (errors.length) throw validationError(errors);
 
@@ -253,8 +259,9 @@ const publishCandidateProfile = async (user, input, media = [], activePlan = {})
   profile.keywords = keywordsOf(profile);
 
   let proofNeeded = false;
-  let suspended = false;
-  await db.runTransaction(async (tx) => {
+let suspended = false;
+
+const writeProfile = async (tx) => {
     const snap = await tx.get(ref);
     const prev = snap.exists ? snap.data() : null;
     const trainingUnchanged = prev && prev.training === training;
@@ -282,11 +289,26 @@ const publishCandidateProfile = async (user, input, media = [], activePlan = {})
         status: 'a_verifier',
       });
     }
-  });
+      return {
+      status: suspended ? 'pending_review' : 'published',
+      universe: 'personnel',
+      itemId: user.id,
+    };
+  };
+
+  // Si une transaction est fournie, préparer les écritures
+  // sans déclencher de transaction indépendante.
+  if (transaction) {
+    return writeProfile(transaction);
+  }
+
+  // Comportement historique pour les autres appels.
+  const result = await db.runTransaction(writeProfile);
+
+  // Invalider le cache seulement après le commit.
   invalidateCandidate(user.id);
 
-  // Profil suspendu par la modération : mis à jour mais pas remis en ligne
-  return { status: suspended ? 'pending_review' : 'published', universe: 'personnel', itemId: user.id };
+  return result;
 };
 
 module.exports = {

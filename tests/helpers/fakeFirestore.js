@@ -135,17 +135,59 @@ class Transaction {
 }
 
 class FakeDb {
-  constructor() { this.store = new Map(); this.simulateMissingIndex = false; this._n = 0; }
+  constructor() { this.store = new Map(); this.simulateMissingIndex = false; this._n = 0; this._transactionQueue = Promise.resolve(); }
   reset() { this.store.clear(); this.simulateMissingIndex = false; }
   _autoId() { this._n += 1; return `auto${String(this._n).padStart(6, '0')}`; }
   collection(name) { return new Query(this, name); }
   async getAll(...refs) { return Promise.all(refs.map((r) => r.get())); }
-  async runTransaction(fn) {
+async runTransaction(fn) {
+  // Attendre la fin de la transaction précédente.
+  const previous = this._transactionQueue;
+
+  let release;
+
+  this._transactionQueue = new Promise((resolve) => {
+    release = resolve;
+  });
+
+  await previous;
+
+  try {
     const tx = new Transaction(this);
+
+    // Exécuter les lectures et préparer les écritures.
     const result = await fn(tx);
-    tx.writes.forEach((w) => w());
+
+    // Sauvegarder l'état existant.
+    const originalStore = this.store;
+
+    // Préparer une copie isolée de la base.
+    const pendingStore = new Map(
+      Array.from(originalStore.entries()).map(
+        ([key, value]) => [key, clone(value)]
+      )
+    );
+
+    this.store = pendingStore;
+
+    try {
+      // Appliquer toutes les écritures sur la copie.
+      for (const write of tx.writes) {
+        write();
+      }
+    } catch (error) {
+      // Annuler toutes les écritures en cas d'erreur.
+      this.store = originalStore;
+      throw error;
+    }
+
     return result;
+  } finally {
+    // Autoriser la transaction suivante.
+    release();
   }
+}
+
 
   _set(p, data, { merge = false } = {}) {
     assertDefined(data);

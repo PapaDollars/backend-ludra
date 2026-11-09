@@ -3,7 +3,10 @@ const { db } = require('../config/firebase');
 const { AppError, notFound, validationError } = require('../utils/AppError');
 const { getUser } = require('../utils/userCache');
 const { createAuditEntry } = require('../utils/audit');
-const { publishCandidateProfile } = require('./candidates.service');
+const {
+  publishCandidateProfile,
+  invalidateCandidate,
+} = require('./candidates.service');
 const { getActiveSubscription, candidatePlanOf } = require('./subscriptions.service');
 
 /**
@@ -139,6 +142,16 @@ const createDraft = async (user, body = {}) => {
     throw new AppError(`Vous avez déjà ${MAX_DRAFTS_PER_USER} brouillons. Publiez-en ou supprimez-en avant d'en créer un autre.`, 409, 'DRAFT_LIMIT');
   }
 
+
+if (body.onBehalfOf && body.type === 'personnel') {
+  throw new AppError(
+    'La création d’un profil candidat pour autrui est interdite.',
+    403,
+    'CANDIDATE_DELEGATION_FORBIDDEN'
+  );
+}
+
+
   let onBehalfOf = null;
   if (body.onBehalfOf) {
     if (!canActOnBehalf(user)) throw new AppError('Permission insuffisante pour publier pour le compte d\'un utilisateur.', 403, 'FORBIDDEN');
@@ -168,12 +181,38 @@ const getDraft = async (userId, id) => {
 };
 
 /** `PATCH /drafts/:id` : remplace les champs envoyés (1 lecture + 1 écriture). */
+
 const updateDraft = async (userId, id, body) => {
   const snap = await getOwnDraftDoc(userId, id);
-  const updates = { ...cleanPatch(body), updatedAt: new Date().toISOString() };
+
+  const cleaned = cleanPatch(body);
+  const { candidate, ...otherUpdates } = cleaned;
+
+  const updates = {
+    ...otherUpdates,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // Mettre à jour uniquement les champs envoyés
+  if (candidate !== undefined) {
+    for (const [field, value] of Object.entries(candidate)) {
+      updates[`candidate.${field}`] = value;
+    }
+  }
+
   await snap.ref.update(updates);
-  return toDraft(snap.id, { ...snap.data(), ...updates });
+
+  return toDraft(snap.id, {
+    ...snap.data(),
+    ...otherUpdates,
+    candidate: {
+      ...(snap.data().candidate || {}),
+      ...(candidate || {}),
+    },
+    updatedAt: updates.updatedAt,
+  });
 };
+
 
 const deleteDraft = async (userId, id) => {
   const snap = await getOwnDraftDoc(userId, id);
@@ -195,37 +234,140 @@ const verifiedMedia = async (draft) => {
  * `POST /drafts/:id/publish` : validation complète puis publication ; le brouillon est supprimé en cas de succès.
  * @returns {Promise<{ status: 'published' | 'pending_review' | 'pending_kyc', universe: string, itemId: string }>}
  */
+
+
 const publishDraft = async (user, id) => {
-  const snap = await getOwnDraftDoc(user.id, id);
-  const draft = { id: snap.id, ...snap.data() };
-
-  if (!draft.type) throw validationError([{ field: 'type', message: 'Choisissez un type de publication.' }]);
-  if (!PUBLISHABLE.includes(draft.type)) {
-    const what = draft.type === 'immobilier' ? 'des biens immobiliers' : 'des services';
-    throw new AppError(`La publication ${what} n'est pas encore disponible. Votre brouillon est conservé.`, 501, 'NOT_IMPLEMENTED');
+  if (!validId(id)) {
+    throw notFound('Brouillon introuvable');
   }
 
-  // Publication pour le compte d'un utilisateur : permission revérifiée au moment de publier
-  let publisher = user;
-  if (draft.onBehalfOf) {
-    if (!canActOnBehalf(user)) throw new AppError('Permission insuffisante pour publier pour le compte d\'un utilisateur.', 403, 'FORBIDDEN');
-    publisher = await getUser(draft.onBehalfOf.userId);
-    if (!publisher || publisher.isActive === false) throw notFound('Utilisateur introuvable');
-  }
+  const draftRef = col().doc(id);
+  const claimRef = db.collection('draft_publish_claims').doc(id);
 
-  const media = await verifiedMedia(draft);
-  const sub = await getActiveSubscription(publisher.id, 'candidate');
-  const result = await publishCandidateProfile(publisher, draft.candidate || {}, media, candidatePlanOf(sub));
+  // Lecture de l'abonnement avant la transaction.
+  const sub = await getActiveSubscription(user.id, 'candidate');
 
-  await snap.ref.delete();
-  if (draft.onBehalfOf) {
-    await createAuditEntry(user, {
-      action: 'publication.on_behalf', targetType: 'user', targetId: publisher.id,
-      targetLabel: `${publisher.name || publisher.email} — profil candidat`,
+  const result = await db.runTransaction(async (tx) => {
+    // 1. Lire une éventuelle publication précédente.
+    const claimSnap = await tx.get(claimRef);
+
+    if (claimSnap.exists) {
+      const claim = claimSnap.data();
+
+      if (claim.userId !== user.id) {
+        throw notFound('Brouillon introuvable');
+      }
+
+      // Rejouer le résultat sans republier le profil.
+      if (claim.status === 'published' && claim.result) {
+        return claim.result;
+      }
+
+      // Ancienne réservation incomplète : examen nécessaire.
+      throw new AppError(
+        'Publication en cours ou à vérifier.',
+        409,
+        'DRAFT_ALREADY_CLAIMED'
+      );
+    }
+
+    // 2. Relire le brouillon dans la transaction.
+    const snap = await tx.get(draftRef);
+
+    if (!snap.exists || snap.data().userId !== user.id) {
+      throw notFound('Brouillon introuvable');
+    }
+
+    const draft = { id: snap.id, ...snap.data() };
+
+    if (!draft.type) {
+      throw validationError([
+        {
+          field: 'type',
+          message: 'Choisissez un type de publication.',
+        },
+      ]);
+    }
+
+    if (!PUBLISHABLE.includes(draft.type)) {
+      const what = draft.type === 'immobilier'
+        ? 'des biens immobiliers'
+        : 'des services';
+
+      throw new AppError(
+        `La publication ${what} n'est pas encore disponible. Votre brouillon est conservé.`,
+        501,
+        'NOT_IMPLEMENTED'
+      );
+    }
+
+    // Seul l'univers personnel est actuellement publiable.
+    if (draft.onBehalfOf) {
+      throw new AppError(
+        'Vous ne pouvez pas publier un profil candidat pour une autre personne.',
+        403,
+        'CANDIDATE_DELEGATION_FORBIDDEN'
+      );
+    }
+
+    // 3. Vérifier les médias dans la même transaction.
+    const media = [];
+
+    for (const item of draft.media || []) {
+      const uploadRef = db.collection('uploads').doc(item.id);
+      const uploadSnap = await tx.get(uploadRef);
+
+      if (
+        !uploadSnap.exists ||
+        uploadSnap.data().userId !== user.id
+      ) {
+        throw validationError([
+          {
+            field: 'media',
+            message: 'Une photo est introuvable : retirez-la et téléversez-la à nouveau.',
+          },
+        ]);
+      }
+
+      media.push({
+        url: uploadSnap.data().url,
+        type: 'image',
+      });
+    }
+
+    // 4. Préparer le profil candidat dans cette transaction.
+    const published = await publishCandidateProfile(
+      user,
+      draft.candidate || {},
+      media,
+      candidatePlanOf(sub),
+      tx
+    );
+
+    const now = new Date().toISOString();
+
+    // 5. Les écritures suivantes seront validées ensemble.
+    tx.delete(draftRef);
+
+    tx.create(claimRef, {
+      draftId: id,
+      userId: user.id,
+      status: 'published',
+      itemId: published.itemId,
+      result: published,
+      createdAt: now,
+      updatedAt: now,
     });
-  }
+
+    return published;
+  });
+
+  // 6. Le commit a réussi : actualiser le cache.
+  invalidateCandidate(user.id);
+
   return result;
 };
+
 
 module.exports = {
   listDrafts, createDraft, getDraft, updateDraft, deleteDraft, publishDraft, cleanPatch,
